@@ -1,7 +1,7 @@
-frostfall
+Frostfall Engine
 ==
 
-Frostfall Engine
+The game engine where everything is an entity.
 
 [![GitHub Actions](https://github.com/bkaradzic/bx/actions/workflows/main.yml/badge.svg)](https://github.com/bkaradzic/bx/actions)
 [![License](https://img.shields.io/badge/license-BSD--2%20clause-blue.svg)](https://bkaradzic.github.io/bgfx/license.html)
