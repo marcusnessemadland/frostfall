@@ -1,4 +1,8 @@
 # 3rdparty bgfx
+cmake_dependent_option(FROST_BUILD_TOOLS_SHADERC "Build graphics shader compiler." ON "FROST_BUILD_TOOLS;NOT CMAKE_CROSSCOMPILING" OFF)
+cmake_dependent_option(FROST_BUILD_TOOLS_TEXTUREC "Build graphics texture compiler." ON "FROST_BUILD_TOOLS;NOT CMAKE_CROSSCOMPILING" OFF)
+cmake_dependent_option(FROST_BUILD_TOOLS_GEOMETRYC "Build graphics geometry compiler." ON "FROST_BUILD_TOOLS;NOT CMAKE_CROSSCOMPILING" OFF)
+
 set(BGFX_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/bgfx/bgfx"
     CACHE PATH "Path to bgfx source"
@@ -14,16 +18,6 @@ set(BGFX_BUILD_EXAMPLES OFF CACHE BOOL "Build bgfx examples" FORCE)
 set(BGFX_BUILD_TESTS OFF CACHE BOOL "Build bgfx tests" FORCE)
 set(BGFX_INSTALL OFF CACHE BOOL "Install bgfx" FORCE)
 set(BGFX_LIBRARY_TYPE STATIC CACHE STRING "bgfx library type" FORCE)
-
-include(3rdparty/bgfx/cmake/bgfx/3rdparty/spirv-opt.cmake)
-include(3rdparty/bgfx/cmake/bgfx/3rdparty/spirv-cross.cmake)
-include(3rdparty/bgfx/cmake/bgfx/3rdparty/glslang.cmake)
-include(3rdparty/bgfx/cmake/bgfx/3rdparty/webgpu.cmake)
-include(3rdparty/bgfx/cmake/bgfx/3rdparty/tint.cmake)
-set_target_properties(glslang PROPERTIES FOLDER "frost/plugins/graphics/3rdparty")
-set_target_properties(spirv-cross PROPERTIES FOLDER "frost/plugins/graphics/3rdparty")
-set_target_properties(spirv-opt PROPERTIES FOLDER "frost/plugins/graphics/3rdparty")
-set_target_properties(tint PROPERTIES FOLDER "frost/plugins/graphics/3rdparty")
 
 add_subdirectory(3rdparty/bgfx EXCLUDE_FROM_ALL)
 set_target_properties(bx PROPERTIES FOLDER "frost/plugins/graphics/3rdparty")

@@ -7,6 +7,45 @@
 #include <device.h>
 
 #include <bgfx/bgfx.h>
+#include <bgfx/embedded_shader.h>
+
+#include "vs_deferred_geom.bin.h"
+#include "fs_deferred_geom.bin.h"
+
+namespace frost
+{
+	static const bgfx::EmbeddedShader s_embeddedShaders[] =
+	{
+		BGFX_EMBEDDED_SHADER(vs_deferred_geom),
+		BGFX_EMBEDDED_SHADER(fs_deferred_geom),
+
+		BGFX_EMBEDDED_SHADER_END()
+	};
+
+	struct TempSceneResource
+	{
+		bgfx::ProgramHandle program;
+	};
+
+	struct TempSceneSystem
+	{
+		static void startup(ResMutT<TempSceneResource> _temp)
+		{
+			const bgfx::RendererType::Enum type = bgfx::getRendererType();
+			
+			_temp->program = bgfx::createProgram(
+				bgfx::createEmbeddedShader(s_embeddedShaders, type, "vs_deferred_geom"),
+				bgfx::createEmbeddedShader(s_embeddedShaders, type, "fs_deferred_geom"),
+				true
+			);
+		}
+		
+		static void shutdown(ResT<TempSceneResource> _temp)
+		{
+			bgfx::destroy(_temp->program);
+		}
+	};
+}
 
 namespace frost
 {
@@ -81,9 +120,13 @@ namespace frost
 {
 	void GraphicsPlugin::build(App& _app)
 	{
+		_app.insertResource<TempSceneResource>();
+		
 		_app.addSystems(EcsStage::Startup, BgfxSystem::startup);
+		_app.addSystems(EcsStage::Startup, TempSceneSystem::startup);
 		_app.addSystems(EcsStage::PreUpdate, BgfxSystem::preUpdate);
 		_app.addSystems(EcsStage::PostUpdate, BgfxSystem::postUpdate); // Swaps buffers
+		_app.addSystems(EcsStage::Shutdown, TempSceneSystem::shutdown);
 		_app.addSystems(EcsStage::Shutdown, BgfxSystem::shutdown);
 	}
 

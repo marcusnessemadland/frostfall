@@ -61,7 +61,7 @@ namespace bgfx
 #include <tinystl/vector.h>
 namespace stl = tinystl;
 
-#include "../../src/shader.h"
+#include "shader.h"
 
 namespace bgfx { namespace spirv
 {

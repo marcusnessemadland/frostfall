@@ -28,7 +28,7 @@ BX_PRAGMA_DIAGNOSTIC_IGNORED_CLANG_GCC("-Wattributes") // warning: 'uuid' attrib
 #include <d3d12shader.h>
 BX_PRAGMA_DIAGNOSTIC_POP()
 
-#include "../../src/shader.h"
+#include "shader.h"
 
 namespace bgfx { namespace dxil
 {

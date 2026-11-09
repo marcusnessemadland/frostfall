@@ -5,7 +5,7 @@
 
 #include "shaderc.h"
 #include "pp.h"
-#include "../../src/shader.h"
+#include "shader.h"
 #include <bx/commandline.h>
 #include <bx/filepath.h>
 #include <bx/file.h>

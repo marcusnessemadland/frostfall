@@ -13,6 +13,8 @@ CMakeUserPresets.json
 *.dll
 *.asi
 build/
+plugins/graphics/tools/bin/
+plugins/graphics/shaders/.shader-settings*
 *.TMP
 *.dxvk-cache
 *.log

@@ -23,7 +23,7 @@
 #endif // BX_PLATFORM_LINUX || BX_PLATFORM_OSX
 #include <bx/os.h>
 
-#include "../../src/shader.h"
+#include "shader.h"
 
 #ifndef D3D_SVF_USED
 #	define D3D_SVF_USED 2

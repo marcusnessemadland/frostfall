@@ -67,7 +67,7 @@ namespace bgfx
 #include <bx/scanner.h>
 #include <bx/hash.h>
 #include <bx/file.h>
-#include "../../src/vertexlayout.h"
+#include "vertexlayout.h"
 
 #include <string.h>
 #include <algorithm>
