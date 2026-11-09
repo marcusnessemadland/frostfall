@@ -1,7 +1,7 @@
 Frostfall Engine
 ==
 
-The game engine where everything is an entity.
+Keep it simple, intelligent and user-centric.
 
 [![GitHub Actions](https://github.com/bkaradzic/bx/actions/workflows/main.yml/badge.svg)](https://github.com/bkaradzic/bx/actions)
 [![License](https://img.shields.io/badge/license-BSD--2%20clause-blue.svg)](https://bkaradzic.github.io/bgfx/license.html)
@@ -9,7 +9,7 @@ The game engine where everything is an entity.
 Goals:
 
  - Provide OS/runtime/compiler independent core functionality to be able to
-   write cross-platform applications.
+   write cross-platform games.
  - Compile without C Runtime (CRT) and without C++ Standard Library (STL).
 
 Contact
