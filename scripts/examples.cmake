@@ -22,7 +22,12 @@ foreach(FROST_EXAMPLE_DIR IN LISTS FROST_EXAMPLE_DIRS)
 	get_filename_component(FROST_EXAMPLE_NAME "${FROST_EXAMPLE_DIR}" NAME)
 	set(FROST_EXAMPLE_TARGET "example-${FROST_EXAMPLE_NAME}")
 	add_executable(${FROST_EXAMPLE_TARGET} ${FROST_EXAMPLE_SOURCES} ${FROST_EXAMPLE_HEADERS})
-	target_link_libraries(${FROST_EXAMPLE_TARGET} PRIVATE frost device)
+    target_link_libraries(${FROST_EXAMPLE_TARGET}
+            PRIVATE
+            frost
+            device   # Device plugin
+            graphics # Graphics plugin
+    )
 	set_target_properties(${FROST_EXAMPLE_TARGET} PROPERTIES FOLDER "frost/examples")
 
 	source_group(TREE "${FROST_EXAMPLE_DIR}" FILES ${FROST_EXAMPLE_SOURCES} ${FROST_EXAMPLE_HEADERS})

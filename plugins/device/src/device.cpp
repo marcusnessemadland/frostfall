@@ -102,7 +102,7 @@ namespace frost
 			}
 		}
 
-		static void update(frost::ResT<SdlControl> _control, ResMutT<Display> _display, ResMutT<Input> _input)
+		static void update(ResT<SdlControl> _control, ResMutT<Display> _display, ResMutT<Input> _input)
 		{
 			SDL_Window* window = ((SDL_Window*)(_display->window));
 			const SDL_WindowID windowId = NULL == window ? 0 : SDL_GetWindowID(window);

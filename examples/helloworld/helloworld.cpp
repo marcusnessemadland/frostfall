@@ -3,11 +3,14 @@
  * License: See LICENSE in the project root.
  */
 
+// Engine
 #include <frost/ecs.h>
 #include <frost/file.h>
 #include <frost/commandline.h>
 
+// Plugins
 #include <device.h>
+#include <graphics.h>
 
 static const frost::CommandLineOption s_options[] =
 {
@@ -16,7 +19,7 @@ static const frost::CommandLineOption s_options[] =
 	{ NULL,  "height", 1, "<height>", "Startup window height.\n"    }
 };
 
-void help(const char* _error = NULL)
+static void help(const char* _error = NULL)
 {
 	if (NULL != _error)
 	{
@@ -61,8 +64,12 @@ int main(int _argc, const char* _argv[])
 	frost::App app(&allocator);
 	{
 		app.insertResource<frost::DeviceResource>(
-			frost::DeviceResource{"frost | helloworld example", width, height});
+			frost::DeviceResource{ "frost | helloworld example", width, height });
 		app.addPlugins<frost::DevicePlugin>();
+
+		app.insertResource<frost::GraphicsResource>(
+			frost::GraphicsResource{ width, height });
+		app.addPlugins<frost::GraphicsPlugin>();
 	}
 	app.run();
 
