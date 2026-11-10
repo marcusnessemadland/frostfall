@@ -2,12 +2,20 @@
 #define BX_PLUGIN_GRAPHICS_P_H_HEADER_GUARD
 
 #include <bgfx/bgfx.h>
-#include <bx/pixelformat.h>
+#include <bgfx/embedded_shader.h>
+
+#include <frost/math.h>
 
 namespace frost
 {
 	constexpr bgfx::ViewId kRenderPassGeometry = 0;
 
+} // namespace frost
+
+#include <bx/pixelformat.h>
+
+namespace frost
+{
 	uint32_t encodeNormalRgba8(float _x, float _y = 0.0f, float _z = 0.0f, float _w = 0.0f)
 	{
 		const float src[] =
@@ -119,81 +127,296 @@ namespace frost
 		delete [] tangents;
 	}
 
-	struct PosTexCoord0Vertex
+} // namespace frost
+
+// TEMP asset stuff, so we can work on rendering without asset system
+namespace frost
+{
+	struct PosNormalTangentTexcoordVertex
 	{
 		float m_x;
 		float m_y;
 		float m_z;
-		float m_u;
-		float m_v;
+		uint32_t m_normal;
+		uint32_t m_tangent;
+		int16_t m_u;
+		int16_t m_v;
 
 		static void init()
 		{
 			ms_layout
 				.begin()
 				.add(bgfx::Attrib::Position,  3, bgfx::AttribType::Float)
-				.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float)
+				.add(bgfx::Attrib::Normal,    4, bgfx::AttribType::Uint8, true, true)
+				.add(bgfx::Attrib::Tangent,   4, bgfx::AttribType::Uint8, true, true)
+				.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Int16, true, true)
 				.end();
 		}
 
 		static bgfx::VertexLayout ms_layout;
 	};
 
-	bgfx::VertexLayout PosTexCoord0Vertex::ms_layout;
+	bgfx::VertexLayout PosNormalTangentTexcoordVertex::ms_layout;
 
-	// @remark Remember to call PosTexCoord0Vertex::init();
-	void screenSpaceQuad(bool _originBottomLeft, float _width = 1.0f, float _height = 1.0f)
+	static PosNormalTangentTexcoordVertex s_cubeVertices[24] =
 	{
-		if (3 == bgfx::getAvailTransientVertexBuffer(3, PosTexCoord0Vertex::ms_layout) )
+		{-1.0f,  1.0f,  1.0f, encodeNormalRgba8( 0.0f,  0.0f,  1.0f), 0,      0,      0 },
+		{ 1.0f,  1.0f,  1.0f, encodeNormalRgba8( 0.0f,  0.0f,  1.0f), 0, 0x7fff,      0 },
+		{-1.0f, -1.0f,  1.0f, encodeNormalRgba8( 0.0f,  0.0f,  1.0f), 0,      0, 0x7fff },
+		{ 1.0f, -1.0f,  1.0f, encodeNormalRgba8( 0.0f,  0.0f,  1.0f), 0, 0x7fff, 0x7fff },
+		{-1.0f,  1.0f, -1.0f, encodeNormalRgba8( 0.0f,  0.0f, -1.0f), 0,      0,      0 },
+		{ 1.0f,  1.0f, -1.0f, encodeNormalRgba8( 0.0f,  0.0f, -1.0f), 0, 0x7fff,      0 },
+		{-1.0f, -1.0f, -1.0f, encodeNormalRgba8( 0.0f,  0.0f, -1.0f), 0,      0, 0x7fff },
+		{ 1.0f, -1.0f, -1.0f, encodeNormalRgba8( 0.0f,  0.0f, -1.0f), 0, 0x7fff, 0x7fff },
+		{-1.0f,  1.0f,  1.0f, encodeNormalRgba8( 0.0f,  1.0f,  0.0f), 0,      0,      0 },
+		{ 1.0f,  1.0f,  1.0f, encodeNormalRgba8( 0.0f,  1.0f,  0.0f), 0, 0x7fff,      0 },
+		{-1.0f,  1.0f, -1.0f, encodeNormalRgba8( 0.0f,  1.0f,  0.0f), 0,      0, 0x7fff },
+		{ 1.0f,  1.0f, -1.0f, encodeNormalRgba8( 0.0f,  1.0f,  0.0f), 0, 0x7fff, 0x7fff },
+		{-1.0f, -1.0f,  1.0f, encodeNormalRgba8( 0.0f, -1.0f,  0.0f), 0,      0,      0 },
+		{ 1.0f, -1.0f,  1.0f, encodeNormalRgba8( 0.0f, -1.0f,  0.0f), 0, 0x7fff,      0 },
+		{-1.0f, -1.0f, -1.0f, encodeNormalRgba8( 0.0f, -1.0f,  0.0f), 0,      0, 0x7fff },
+		{ 1.0f, -1.0f, -1.0f, encodeNormalRgba8( 0.0f, -1.0f,  0.0f), 0, 0x7fff, 0x7fff },
+		{ 1.0f, -1.0f,  1.0f, encodeNormalRgba8( 1.0f,  0.0f,  0.0f), 0,      0,      0 },
+		{ 1.0f,  1.0f,  1.0f, encodeNormalRgba8( 1.0f,  0.0f,  0.0f), 0, 0x7fff,      0 },
+		{ 1.0f, -1.0f, -1.0f, encodeNormalRgba8( 1.0f,  0.0f,  0.0f), 0,      0, 0x7fff },
+		{ 1.0f,  1.0f, -1.0f, encodeNormalRgba8( 1.0f,  0.0f,  0.0f), 0, 0x7fff, 0x7fff },
+		{-1.0f, -1.0f,  1.0f, encodeNormalRgba8(-1.0f,  0.0f,  0.0f), 0,      0,      0 },
+		{-1.0f,  1.0f,  1.0f, encodeNormalRgba8(-1.0f,  0.0f,  0.0f), 0, 0x7fff,      0 },
+		{-1.0f, -1.0f, -1.0f, encodeNormalRgba8(-1.0f,  0.0f,  0.0f), 0,      0, 0x7fff },
+		{-1.0f,  1.0f, -1.0f, encodeNormalRgba8(-1.0f,  0.0f,  0.0f), 0, 0x7fff, 0x7fff },
+	};
+
+	static const uint16_t s_cubeIndices[36] =
+	{
+		 0,  2,  1,
+		 1,  2,  3,
+		 4,  5,  6,
+		 5,  7,  6,
+
+		 8, 10,  9,
+		 9, 10, 11,
+		12, 13, 14,
+		13, 15, 14,
+
+		16, 18, 17,
+		17, 18, 19,
+		20, 21, 22,
+		21, 23, 22,
+	};
+
+	struct TempAssetsResource
+	{
+		bgfx::VertexBufferHandle cubeVertexBuffer;
+		bgfx::IndexBufferHandle cubeIndexBuffer;
+	};
+
+	struct TempAssetsSystem
+	{
+		static void startup(ResMutT<TempAssetsResource> _assets)
 		{
-			bgfx::TransientVertexBuffer vb;
-			bgfx::allocTransientVertexBuffer(&vb, 3, PosTexCoord0Vertex::ms_layout);
-			PosTexCoord0Vertex* vertex = (PosTexCoord0Vertex*)vb.data;
+			PosNormalTangentTexcoordVertex::init();
 
-			const float minx = -_width;
-			const float maxx =  _width;
-			const float miny = 0.0f;
-			const float maxy = _height*2.0f;
+			calcTangents(s_cubeVertices
+				, BX_COUNTOF(s_cubeVertices)
+				, PosNormalTangentTexcoordVertex::ms_layout
+				, s_cubeIndices
+				, BX_COUNTOF(s_cubeIndices)
+				);
 
-			const float minu = -1.0f;
-			const float maxu =  1.0f;
+			_assets->cubeVertexBuffer = bgfx::createVertexBuffer(
+					bgfx::makeRef(s_cubeVertices, sizeof(s_cubeVertices) )
+					, PosNormalTangentTexcoordVertex::ms_layout
+					);
+			_assets->cubeIndexBuffer = bgfx::createIndexBuffer(
+				bgfx::makeRef(s_cubeIndices, sizeof(s_cubeIndices) ) );
+		}
 
-			const float zz = 0.0f;
+		static void shutdown(ResT<TempAssetsResource> _assets)
+		{
+			bgfx::destroy(_assets->cubeVertexBuffer);
+			bgfx::destroy(_assets->cubeIndexBuffer);
+		}
+	};
 
-			float minv = 0.0f;
-			float maxv = 2.0f;
+} // namespace frost
 
-			if (_originBottomLeft)
+#include "vs_deferred_geom.bin.h"
+#include "fs_deferred_geom.bin.h"
+
+namespace frost
+{
+	static const bgfx::EmbeddedShader s_embeddedShaders[] =
+	{
+		BGFX_EMBEDDED_SHADER(vs_deferred_geom),
+		BGFX_EMBEDDED_SHADER(fs_deferred_geom),
+
+		BGFX_EMBEDDED_SHADER_END()
+	};
+
+	struct GBufferResource
+	{
+		bgfx::ProgramHandle program;
+		bgfx::UniformHandle s_texColor;
+		bgfx::UniformHandle s_texNormal;
+
+		bgfx::FrameBufferHandle frameBuffer;
+		bgfx::TextureHandle textures[3];
+		uint32_t width, height;
+	};
+
+	struct GBufferSystem
+	{
+		static void startup(ResMutT<GBufferResource> _gbuffer)
+		{
+			const bgfx::RendererType::Enum type = bgfx::getRendererType();
+
+			_gbuffer->program = bgfx::createProgram(
+				bgfx::createEmbeddedShader(s_embeddedShaders, type, "vs_deferred_geom"),
+				bgfx::createEmbeddedShader(s_embeddedShaders, type, "fs_deferred_geom"),
+				true
+			);
+
+			_gbuffer->s_texColor  = bgfx::createUniform("s_texColor",  bgfx::UniformType::Sampler);
+			_gbuffer->s_texNormal = bgfx::createUniform("s_texNormal", bgfx::UniformType::Sampler);
+
+			// Invalidate framebuffer so it gets created
+			_gbuffer->frameBuffer = BGFX_INVALID_HANDLE;
+		}
+
+		static void update(
+			  ResT<Display> _display
+			, ResT<TempAssetsResource> _assets
+			, ResT<ActiveCamera> _activeCamera
+			, QueryT<const Camera&> _cameras
+			, ResMutT<GBufferResource> _gbuffer
+			)
+		{
+			if (0 == _display->width || 0 == _display->height)
 			{
-				float temp = minv;
-				minv = maxv;
-				maxv = temp;
-
-				minv -= 1.0f;
-				maxv -= 1.0f;
+				return;
 			}
 
-			vertex[0].m_x = minx;
-			vertex[0].m_y = miny;
-			vertex[0].m_z = zz;
-			vertex[0].m_u = minu;
-			vertex[0].m_v = minv;
+			// Find active camera
+			Camera camera;
+			if (!_cameras.get(_activeCamera->entity, [&](const Camera& _camera)
+				{
+					camera = _camera;
+				}) )
+			{
+				return;
+			}
 
-			vertex[1].m_x = maxx;
-			vertex[1].m_y = miny;
-			vertex[1].m_z = zz;
-			vertex[1].m_u = maxu;
-			vertex[1].m_v = minv;
+			// Recreate framebuffer if needed
+			if (_gbuffer->width != _display->width || _gbuffer->height != _display->height)
+			{
+				if (bgfx::isValid(_gbuffer->frameBuffer))
+				{
+					// Textures are destroyed when framebuffer is destroyed
+					bgfx::destroy(_gbuffer->frameBuffer);
+				}
 
-			vertex[2].m_x = maxx;
-			vertex[2].m_y = maxy;
-			vertex[2].m_z = zz;
-			vertex[2].m_u = maxu;
-			vertex[2].m_v = maxv;
+				const uint64_t tsFlags = 0
+					| BGFX_SAMPLER_MIN_POINT
+					| BGFX_SAMPLER_MAG_POINT
+					| BGFX_SAMPLER_MIP_POINT
+					| BGFX_SAMPLER_U_CLAMP
+					| BGFX_SAMPLER_V_CLAMP
+					;
 
-			bgfx::setVertexBuffer(0, &vb);
+				_gbuffer->width = _display->width;
+				_gbuffer->height = _display->height;
+
+				// Create framebuffer
+				bgfx::Attachment gbufferAt[3];
+				{
+					_gbuffer->textures[0] = bgfx::createTexture2D(uint16_t(_gbuffer->width), uint16_t(_gbuffer->height), false, 1, bgfx::TextureFormat::BGRA8, BGFX_TEXTURE_RT | tsFlags);
+					_gbuffer->textures[1] = bgfx::createTexture2D(uint16_t(_gbuffer->width), uint16_t(_gbuffer->height), false, 1, bgfx::TextureFormat::BGRA8, BGFX_TEXTURE_RT | tsFlags);
+					gbufferAt[0].init(_gbuffer->textures[0], bgfx::Access::Write, 0, 1, 0, BGFX_ATTACHMENT_NONE);
+					gbufferAt[1].init(_gbuffer->textures[1], bgfx::Access::Write, 0, 1, 0, BGFX_ATTACHMENT_NONE);
+
+					// Use D32F if available
+					const bgfx::TextureFormat::Enum depthFormat =
+						  bgfx::isTextureValid(0, false, 1, bgfx::TextureFormat::D32F, BGFX_TEXTURE_RT | tsFlags)
+						? bgfx::TextureFormat::D32F
+						: bgfx::TextureFormat::D24;
+
+					_gbuffer->textures[2] = bgfx::createTexture2D(uint16_t(_gbuffer->width), uint16_t(_gbuffer->height), false, 1, depthFormat, BGFX_TEXTURE_RT | tsFlags);
+					gbufferAt[2].init(_gbuffer->textures[2], bgfx::Access::Write, 0, 1, 0, BGFX_ATTACHMENT_NONE);
+				}
+				_gbuffer->frameBuffer = bgfx::createFrameBuffer(BX_COUNTOF(gbufferAt), gbufferAt, true);
+			}
+
+			// Set views
+			bgfx::setViewClear(kRenderPassGeometry
+			, BGFX_CLEAR_COLOR|BGFX_CLEAR_DEPTH
+			, 1.0f
+			, 0
+			, 1
+			, 0
+			);
+			bgfx::setViewRect(kRenderPassGeometry, 0, 0, uint16_t(_gbuffer->width), uint16_t(_gbuffer->height));
+			bgfx::setViewFrameBuffer(kRenderPassGeometry, BGFX_INVALID_HANDLE); // test presenting
+			//bgfx::setViewFrameBuffer(kRenderPassGeometry, _gbuffer->frameBuffer);
+
+			float view[16];
+			float proj[16];
+			{
+				// Calculate view projection matrix from camera
+				const bgfx::Caps* caps = bgfx::getCaps();
+
+				mtxFromQuaternion(view, camera.rotation, camera.position);
+
+				const float aspect = float(_gbuffer->width) / float(_gbuffer->height);
+				if (CameraProjection::Orthographic == camera.projection)
+				{
+					const float halfHeight = camera.orthographicHeight * 0.5f;
+					const float halfWidth = halfHeight * aspect;
+					mtxOrtho(proj, -halfWidth, halfWidth, -halfHeight, halfHeight,
+						camera.nearPlane, camera.farPlane, 0.0f, caps->homogeneousDepth);
+				}
+				else
+				{
+					mtxProj(proj, camera.fov, aspect, camera.nearPlane, camera.farPlane, caps->homogeneousDepth);
+				}
+			}
+			bgfx::setViewTransform(kRenderPassGeometry, view, proj);
+
+			// Submit geometry
+			float mtx[16];
+			frost::mtxIdentity(mtx);
+
+			bgfx::setTransform(mtx);
+
+			bgfx::setVertexBuffer(0, _assets->cubeVertexBuffer);
+			bgfx::setIndexBuffer(_assets->cubeIndexBuffer);
+
+			// TODO: Fix once we have asset system
+			//bgfx::setTexture(0, _gbuffer->s_texColor,  _assets->textureColor);
+			//bgfx::setTexture(1, _gbuffer->s_texNormal, _assets->textureNormal);
+
+			bgfx::setState(0
+				| BGFX_STATE_WRITE_RGB
+				| BGFX_STATE_WRITE_A
+				| BGFX_STATE_WRITE_Z
+				| BGFX_STATE_DEPTH_TEST_LESS
+				| BGFX_STATE_MSAA
+			);
+
+			bgfx::submit(kRenderPassGeometry, _gbuffer->program);
 		}
-	}
+
+		static void shutdown(ResMutT<GBufferResource> _gbuffer)
+		{
+			bgfx::destroy(_gbuffer->s_texColor);
+			bgfx::destroy(_gbuffer->s_texNormal);
+
+			// Shaders are destroyed when program is destroyed
+			bgfx::destroy(_gbuffer->program);
+
+			// Textures are destroyed when framebuffer is destroyed
+			bgfx::destroy(_gbuffer->frameBuffer);
+		}
+	};
 
 } // namespace frost
 
