@@ -235,15 +235,18 @@ namespace frost
 {
 	void DevicePlugin::build(App& _app)
 	{
+		// Resources
 		_app.insertResource<SdlControl>(SdlControl{ &_app }); // For exiting application
 
 		_app.insertResource<Display>();
 		_app.insertResource<Input>();
 
+		// Systems
 		_app.addSystems(EcsStage::Startup, SdlSystem::startup);
 		_app.addSystems(EcsStage::PreUpdate, SdlSystem::update);
 		_app.addSystems(EcsStage::Shutdown, SdlSystem::shutdown);
 
+		// Runner
 		_app.setRunner([](App& _app, void*)
 		{
 			while (!_app.shouldExit())

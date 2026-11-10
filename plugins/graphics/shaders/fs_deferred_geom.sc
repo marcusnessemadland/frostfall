@@ -26,6 +26,7 @@ void main()
 
 	vec3 wnormal = normalize(mul(u_invView, vec4(normal, 0.0) ).xyz);
 
-	gl_FragData[0] = texture2D(s_texColor, v_texcoord0);
+	//gl_FragData[0] = texture2D(s_texColor, v_texcoord0);
+	gl_FragData[0] = vec4(1.0, 0.0, 1.0, 1.0);
 	gl_FragData[1] = vec4(encodeNormalUint(wnormal), 1.0);
 }

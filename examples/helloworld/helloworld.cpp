@@ -12,6 +12,8 @@
 #include <device.h>
 #include <graphics.h>
 
+//#include "camera.h"
+
 static const frost::CommandLineOption s_options[] =
 {
 	{ 'h',  "help",   0, NULL,       "Display this help and exit." },

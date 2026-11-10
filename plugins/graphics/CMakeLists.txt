@@ -32,6 +32,10 @@ file(GLOB GRAPHICS_SHADERS CONFIGURE_DEPENDS
 	"${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.sc"
 	"${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.sh"
 )
+#source_group("shaders" FILES ${GRAPHICS_SHADERS})
+#set_source_files_properties(${GRAPHICS_SHADERS}
+#        PROPERTIES HEADER_FILE_ONLY TRUE # Avoid compiling shader sources in IDE
+#)
 
 file(GLOB_RECURSE GRAPHICS_SOURCES
         "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
