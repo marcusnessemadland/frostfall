@@ -47,15 +47,3 @@ if(SHADERC_RUNTIME_FILES)
 		VERBATIM
 	)
 endif()
-
-find_program(FROST_SHADER_MAKE NAMES gmake make)
-if(FROST_SHADER_MAKE)
-	add_custom_target(graphics-shaders
-		COMMAND "${FROST_SHADER_MAKE}" "SHADERC=$<TARGET_FILE:shaderc>" all
-		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../../shaders"
-		DEPENDS shaderc
-		COMMENT "Regenerating embedded graphics shaders"
-		VERBATIM
-	)
-	set_target_properties(graphics-shaders PROPERTIES FOLDER "frost/plugins/graphics/tools")
-endif()
