@@ -1651,7 +1651,7 @@ namespace frost
 				m_stages[ii] = FROST_NEW(m_allocator, Schedule)(m_allocator);
 			}
 
-			m_world.insertResource<Time>();
+			m_world.insertResource<TimeResource>();
 		}
 
 		~Impl()
@@ -1897,19 +1897,19 @@ namespace frost
 		}
 
 		self->m_world.updateMessages();
-		Time time = *self->m_world.getResource<Time>();
+		TimeResource time = *self->m_world.getResource<TimeResource>();
 		time.delta = _delta;
 		time.elapsed += _delta;
 		time.accumulator += _delta;
 		++time.frame;
-		*self->m_world.getResourceMut<Time>() = time;
+		*self->m_world.getResourceMut<TimeResource>() = time;
 		success = ecsRunStage(*this, EcsStage::First) && ecsRunStage(*this, EcsStage::PreUpdate);
 		for (uint32_t ii = 0; success && ii < self->m_states.m_count; ++ii)
 		{
 			const EcsStateDriver state = self->m_states[ii];
 			success = state.m_run(*this, state.m_data);
 		}
-		time = *self->m_world.getResource<Time>();
+		time = *self->m_world.getResource<TimeResource>();
 		// Reject zero, negative, NaN, and infinite fixed intervals before entering the loop.
 		if (!(time.fixedDelta > 0.0) || !isFinite(time.fixedDelta) || !isFinite(time.accumulator) )
 		{
@@ -1921,20 +1921,20 @@ namespace frost
 			time.accumulator -= time.fixedDelta;
 			time.fixedElapsed += time.fixedDelta;
 			time.delta = time.fixedDelta;
-			*self->m_world.getResourceMut<Time>() = time;
+			*self->m_world.getResourceMut<TimeResource>() = time;
 			success = ecsRunStage(*this, EcsStage::FixedFirst) && ecsRunStage(*this, EcsStage::FixedPreUpdate)
 				&& ecsRunStage(*this, EcsStage::FixedUpdate) && ecsRunStage(*this, EcsStage::FixedPostUpdate) && ecsRunStage(
 					  *this
 					, EcsStage::FixedLast
 					);
-			time = *self->m_world.getResource<Time>();
+			time = *self->m_world.getResource<TimeResource>();
 			if (!(time.fixedDelta > 0.0) || !isFinite(time.fixedDelta) || !isFinite(time.accumulator) )
 			{
 				success = false;
 			}
 		}
 		time.delta = _delta;
-		*self->m_world.getResourceMut<Time>() = time;
+		*self->m_world.getResourceMut<TimeResource>() = time;
 		success = success && ecsRunStage(*this, EcsStage::Update) && ecsRunStage(*this, EcsStage::PostUpdate) && ecsRunStage(*this, EcsStage::Last);
 		self->m_world.clearTrackers();
 		self->m_updating = false;

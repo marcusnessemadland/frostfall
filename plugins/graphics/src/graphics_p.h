@@ -676,11 +676,11 @@ namespace frost
 		BGFX_EMBEDDED_SHADER_END()
 	};
 
-	static bool getCameraMatrices(const ActiveCamera& _activeCamera, QueryT<const Camera&> _cameras,
+	static bool getCameraMatrices(const ActiveCameraResource& _activeCamera, QueryT<const CameraComponent&> _cameras,
 		uint32_t _width, uint32_t _height, float* _view, float* _proj)
 	{
-		Camera camera;
-		if (!_cameras.get(_activeCamera.entity, [&](const Camera& _camera) { camera = _camera; }))
+		CameraComponent camera;
+		if (!_cameras.get(_activeCamera.entity, [&](const CameraComponent& _camera) { camera = _camera; }))
 		{
 			return false;
 		}
@@ -785,10 +785,10 @@ namespace frost
 		}
 
 		static void update(
-			  ResT<Display> _display
-			, QueryT<const MeshHandle&, OptionalT<const Transform>> _meshes
-			, ResT<ActiveCamera> _activeCamera
-			, QueryT<const Camera&> _cameras
+			  ResT<DisplayResource> _display
+			, QueryT<const MeshComponent&, OptionalT<const TransformComponent>> _meshes
+			, ResT<ActiveCameraResource> _activeCamera
+			, QueryT<const CameraComponent&> _cameras
 			, ResMutT<GBufferResource> _gbuffer
 			)
 		{
@@ -819,9 +819,9 @@ namespace frost
 			bgfx::setViewClear(kRenderPassGeometry, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 1.0f, 0, 1, 0);
 			bgfx::setViewTransform(kRenderPassGeometry, view, proj);
 			bgfx::touch(kRenderPassGeometry);
-			_meshes.each([&](const MeshHandle& _handle, const Transform* _transform)
+			_meshes.each([&](const MeshComponent& _mesh, const TransformComponent* _transform)
 				{
-					const MeshRef* mesh = getMeshRef(_handle);
+					const MeshRef* mesh = getMeshRef(_mesh.handle);
 					if (NULL == mesh) return;
 					float model[16];
 					mtxIdentity(model);
@@ -965,7 +965,7 @@ namespace frost
 		float perez[20];
 	};
 
-	static void evaluateSun(const Sky& _sky, SunState& _sun)
+	static void evaluateSun(const SkyComponent& _sky, SunState& _sun)
 	{
 		const float hour = isFinite(_sky.time) ? wrap(_sky.time, 24.0f) : 12.0f;
 		const float latitude = toRad(clamp(_sky.latitude, -90.0f, 90.0f));
@@ -1089,7 +1089,7 @@ namespace frost
 			return true;
 		}
 
-		static void update(ResT<GBufferResource> _gbuffer, QueryT<const Sky&> _skies, ResMutT<LightResource> _light)
+		static void update(ResT<GBufferResource> _gbuffer, QueryT<const SkyComponent&> _skies, ResMutT<LightResource> _light)
 		{
 			_light->active = false;
 			if (!_light->ready || !_gbuffer->active)
@@ -1115,7 +1115,7 @@ namespace frost
 			bgfx::touch(kRenderPassLight);
 			_light->active = true;
 			SunState sun = {};
-			if (!_skies.single([&](const Sky& _sky) { evaluateSun(_sky, sun); }) || !screenSpaceTriangle(_light->layout))
+			if (!_skies.single([&](const SkyComponent& _sky) { evaluateSun(_sky, sun); }) || !screenSpaceTriangle(_light->layout))
 			{
 				return;
 			}
@@ -1204,8 +1204,8 @@ namespace frost
 			}
 		}
 
-		static void update(ResT<LightResource> _light, ResT<ActiveCamera> _activeCamera,
-			QueryT<const Camera&> _cameras, QueryT<const Sky&> _skies, ResMutT<SkyResource> _sky)
+		static void update(ResT<LightResource> _light, ResT<ActiveCameraResource> _activeCamera,
+			QueryT<const CameraComponent&> _cameras, QueryT<const SkyComponent&> _skies, ResMutT<SkyResource> _sky)
 		{
 			const uint32_t skyCount = _skies.getCount();
 			if (skyCount != _sky->skyCount)
@@ -1218,7 +1218,7 @@ namespace frost
 				return;
 			}
 			SunState sun = {};
-			if (!_skies.single([&](const Sky& _component) { evaluateSun(_component, sun); }))
+			if (!_skies.single([&](const SkyComponent& _component) { evaluateSun(_component, sun); }))
 			{
 				return;
 			}
@@ -1284,8 +1284,8 @@ namespace frost
 				.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float).end();
 		}
 
-		static void update(ResT<Display> _display, ResT<GBufferResource> _gbuffer,
-			ResT<LightResource> _light, QueryT<const Sky&> _skies, ResT<CombineResource> _combine)
+		static void update(ResT<DisplayResource> _display, ResT<GBufferResource> _gbuffer,
+			ResT<LightResource> _light, QueryT<const SkyComponent&> _skies, ResT<CombineResource> _combine)
 		{
 			if (0 == _display->width || 0 == _display->height)
 			{
@@ -1304,7 +1304,7 @@ namespace frost
 			float projection[16];
 			mtxOrtho(projection, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 100.0f, 0.0f, bgfx::getCaps()->homogeneousDepth);
 			float output[4] = {};
-			_skies.single([&](const Sky& _sky)
+			_skies.single([&](const SkyComponent& _sky)
 				{
 					output[0] = _sky.preventBanding ? 1.0f : 0.0f;
 					output[1] = isFinite(_sky.time) ? wrap(_sky.time, 24.0f) : 12.0f;

@@ -40,7 +40,7 @@ namespace frost
 	};
 
 	/// Startup and frame schedules, followed by Shutdown when the application stops.
-	/// Fixed schedules use Time::fixedDelta.
+	/// Fixed schedules use TimeResource::fixedDelta.
 	///
 	struct EcsStage
 	{
@@ -440,10 +440,10 @@ namespace frost
 
 	/// Variable and fixed time, in seconds. App owns and updates this resource.
 	///
-	struct Time
+	struct TimeResource
 	{
 		///
-		Time();
+		TimeResource();
 
 		double   delta;
 		double   elapsed;

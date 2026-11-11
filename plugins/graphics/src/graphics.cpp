@@ -18,7 +18,7 @@ namespace frost
 
 	struct BgfxSystem
 	{
-		static void startup(World& _world, ResT<GraphicsResource> _graphics, ResT<Display> _display)
+		static void startup(World& _world, ResT<GraphicsResource> _graphics, ResT<DisplayResource> _display)
 		{
 			bgfx::Init init;
 			init.type = bgfx::RendererType::Count; // auto
@@ -37,7 +37,7 @@ namespace frost
 			MeshSystem::startup(_world, _graphics);
 		}
 
-		static void preUpdate(ResT<Display> _display)
+		static void preUpdate(ResT<DisplayResource> _display)
 		{
 			// Reset if needed
 			const bgfx::Stats* stats = bgfx::getStats();
@@ -108,7 +108,7 @@ namespace frost
 	void GraphicsPlugin::build(App& _app)
 	{
 		// Resources
-		_app.getWorld().initResource<ActiveCamera>();
+		_app.getWorld().initResource<ActiveCameraResource>();
 		_app.insertResource<GBufferResource>();
 		_app.insertResource<LightResource>();
 		_app.insertResource<SkyResource>();

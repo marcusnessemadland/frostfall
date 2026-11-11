@@ -28,7 +28,7 @@ namespace frost
 	///
 	/// Handles are borrowed from and remain valid until the device shuts down.
 	///
-	struct Display
+	struct DisplayResource
 	{
 		/// Borrowed internal window pointer.
 		///
@@ -59,7 +59,7 @@ namespace frost
 	///
 	/// pressed, released, relative motion and wheel values are reset before event pumping.
 	///
-	struct Input
+	struct InputResource
 	{
 		/// SDL scancode storage capacity.
 		///
@@ -129,7 +129,7 @@ namespace frost
 
 	/// Creates the window and registers device/input resources and systems.
 	///
-	/// Adds DeviceConfig, Device and Input. Startup creates the window, PreUpdate pumps
+	/// Adds DisplayResource and InputResource. Startup creates the window, PreUpdate pumps
 	/// events, and Shutdown destroys the window and releases video state.
 	///
 	struct DevicePlugin : PluginI

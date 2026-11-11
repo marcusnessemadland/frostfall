@@ -4,15 +4,16 @@
  */
 
 #include <device.h>
+#include <frost/timer.h>
 
 #include <SDL3/SDL.h>
 
 namespace frost
 {
-	static_assert(Input::kNumScancodes == SDL_SCANCODE_COUNT,
-		"Input must have storage for every SDL scancode.");
+	static_assert(InputResource::kNumScancodes == SDL_SCANCODE_COUNT,
+		"InputResource must have storage for every SDL scancode.");
 
-	static void initializeNativeWindow(ResMutT<Display>& _display, SDL_Window* _window)
+	static void initializeNativeWindow(ResMutT<DisplayResource>& _display, SDL_Window* _window)
 	{
 		const SDL_PropertiesID properties = SDL_GetWindowProperties(_window);
 
@@ -59,14 +60,14 @@ namespace frost
 		_display->height = ((uint32_t)(height));
 	}
 
-	struct SdlControl
+	struct SdlControlResource
 	{
 		App* app = NULL;
 	};
 
 	struct SdlSystem
 	{
-		static void startup(ResT<SdlControl> _control, ResT<DeviceResource> _device, ResMutT<Display> _display, ResMutT<Input> _input)
+		static void startup(ResT<SdlControlResource> _control, ResT<DeviceResource> _device, ResMutT<DisplayResource> _display, ResMutT<InputResource> _input)
 		{
 			if (!SDL_Init(SDL_INIT_VIDEO))
 			{
@@ -102,7 +103,7 @@ namespace frost
 			}
 		}
 
-		static void update(ResT<SdlControl> _control, ResMutT<Display> _display, ResMutT<Input> _input)
+		static void update(ResT<SdlControlResource> _control, ResMutT<DisplayResource> _display, ResMutT<InputResource> _input)
 		{
 			SDL_Window* window = ((SDL_Window*)(_display->window));
 			const SDL_WindowID windowId = NULL == window ? 0 : SDL_GetWindowID(window);
@@ -151,7 +152,7 @@ namespace frost
 					{
 						const uint32_t key = ((uint32_t)(event.key.scancode));
 
-						if (key < Input::kNumScancodes)
+						if (key < InputResource::kNumScancodes)
 						{
 							if (!_input->keys[key])
 							{
@@ -168,7 +169,7 @@ namespace frost
 					{
 						const uint32_t key = ((uint32_t)(event.key.scancode));
 
-						if (key < Input::kNumScancodes)
+						if (key < InputResource::kNumScancodes)
 						{
 							_input->keys[key] = false;
 							_input->released[key] = true;
@@ -210,7 +211,7 @@ namespace frost
 			}
 		}
 
-		static void shutdown(ResMutT<Display> _display)
+		static void shutdown(ResMutT<DisplayResource> _display)
 		{
 			SDL_Window* window = ((SDL_Window*)(_display->window));
 
@@ -236,10 +237,10 @@ namespace frost
 	void DevicePlugin::build(App& _app)
 	{
 		// Resources
-		_app.insertResource<SdlControl>(SdlControl{ &_app }); // For exiting application
+		_app.insertResource<SdlControlResource>(SdlControlResource{ &_app }); // For exiting application
 
-		_app.insertResource<Display>();
-		_app.insertResource<Input>();
+		_app.insertResource<DisplayResource>();
+		_app.insertResource<InputResource>();
 
 		// Systems
 		_app.addSystems(EcsStage::Startup, SdlSystem::startup);
@@ -249,9 +250,20 @@ namespace frost
 		// Runner
 		_app.setRunner([](App& _app, void*)
 		{
+			// Run startup with zero delta before starting the frame clock.
+			if (!_app.update())
+			{
+				return;
+			}
+
+			Ticks previous = getNow();
 			while (!_app.shouldExit())
 			{
-				if (!_app.update())
+				const Ticks now = getNow();
+				const double delta = toSeconds<double>(now - previous);
+				previous = now;
+
+				if (!_app.update(delta))
 				{
 					break;
 				}

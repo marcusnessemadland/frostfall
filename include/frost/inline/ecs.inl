@@ -1132,7 +1132,7 @@ namespace frost
 	{
 	}
 
-	inline Time::Time()
+	inline TimeResource::TimeResource()
 		: delta(0.0)
 		, elapsed(0.0)
 		, fixedDelta(1.0/64.0)

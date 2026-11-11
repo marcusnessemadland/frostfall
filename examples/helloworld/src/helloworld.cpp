@@ -7,7 +7,6 @@
 #include <frost/ecs.h>
 #include <frost/file.h>
 #include <frost/commandline.h>
-#include <frost/timer.h>
 
 // Plugins
 #include <device.h>
@@ -34,31 +33,23 @@ namespace frost
 
 namespace
 {
-	struct FlyCameraController
+	struct ExampleCameraComponent
 	{
 		float speed = 10.0f;
 		float boost = 3.0f;
 		float sensitivity = 0.002f;
 	};
 
-	struct FlyCameraResource
-	{
-		frost::Ticks previous = frost::getNow();
-	};
-
 	struct FlyCameraSystem
 	{
 		static void update(
-			  frost::ResT<frost::Input> _input
-			, frost::ResT<frost::ActiveCamera> _activeCamera
-			, frost::QueryT<frost::Camera&, const FlyCameraController&> _cameras
-			, frost::LocalT<FlyCameraResource> _flycamera
+			  frost::ResT<frost::TimeResource> _time
+			, frost::ResT<frost::InputResource> _input
+			, frost::ResT<frost::ActiveCameraResource> _activeCamera
+			, frost::QueryT<frost::CameraComponent&, const ExampleCameraComponent&> _cameras
 			)
 		{
-			// The device runner does not supply Time::delta yet.
-			const frost::Ticks now = frost::getNow();
-			const float delta = frost::min(frost::toSeconds<float>(now - _flycamera->previous), 0.1f);
-			_flycamera->previous = now;
+			const float delta = float(frost::min(_time->delta, 0.1));
 
 			// Dont process input if input is not in focus
 			if (!_input->focused)
@@ -66,9 +57,9 @@ namespace
 				return;
 			}
 
-			// For each entity with Camera and FlyCameraController components...
+			// Update the active example camera.
 			_cameras.get(_activeCamera->entity,
-				[&](frost::Camera& _camera, const FlyCameraController& _controller)
+				[&](frost::CameraComponent& _camera, const ExampleCameraComponent& _controller)
 				{
 					// Rotate camera
 					if (0 != (_input->mouseButtons & frost::MouseRight)
@@ -116,7 +107,6 @@ namespace
 	{
 		// Assets
 		frost::MeshHandle mesh;
-		frost::Ticks previous = frost::getNow();
 		float hoursPerSecond = 0.5f;
 
 		// Instances
@@ -133,7 +123,7 @@ namespace
 
 	struct SceneSystem
 	{
-		static void startup(frost::World& _world, frost::ResMutT<frost::ActiveCamera> _activeCamera, frost::ResMutT<SceneResource> _scene)
+		static void startup(frost::World& _world, frost::ResMutT<frost::ActiveCameraResource> _activeCamera, frost::ResMutT<SceneResource> _scene)
 		{
 			// Load and create assets
 			frost::Error err;
@@ -161,27 +151,24 @@ namespace
 			}
 
 			// Create floor
-			frost::Transform transform;
+			frost::TransformComponent transform;
 			transform.scale = { 100.0f, 1.0f, 100.0f };
-			_scene->instances[SceneResource::Floor] = _world.spawn(_scene->mesh, transform).id();
+			_scene->instances[SceneResource::Floor] = _world.spawn(frost::MeshComponent{ _scene->mesh }, transform).id();
 
 			// One component controls the visible atmosphere and its sunlight.
-			_scene->instances[SceneResource::Sun] = _world.spawn(frost::Sky{}).id();
-			_scene->previous = frost::getNow();
+			_scene->instances[SceneResource::Sun] = _world.spawn(frost::SkyComponent{}).id();
 
 			// Create flying camera entity.
-			frost::Camera camera;
+			frost::CameraComponent camera;
 			camera.position = { 0.0f, 3.0f, -5.0f };
-			_scene->instances[SceneResource::Player] = _world.spawn(camera, FlyCameraController{}).id();
+			_scene->instances[SceneResource::Player] = _world.spawn(camera, ExampleCameraComponent{}).id();
 			_activeCamera->entity = _scene->instances[SceneResource::Player]; // Active camera entity TODO: Figure out a better way for this?
 		}
 
-		static void update(frost::ResMutT<SceneResource> _scene, frost::QueryT<frost::Sky&> _skies)
+		static void update(frost::ResT<frost::TimeResource> _time, frost::ResT<SceneResource> _scene, frost::QueryT<frost::SkyComponent&> _skies)
 		{
-			const frost::Ticks now = frost::getNow();
-			const float delta = frost::min(frost::toSeconds<float>(now - _scene->previous), 0.1f);
-			_scene->previous = now;
-			_skies.get(_scene->instances[SceneResource::Sun], [&](frost::Sky& _sky)
+			const float delta = float(frost::min(_time->delta, 0.1));
+			_skies.get(_scene->instances[SceneResource::Sun], [&](frost::SkyComponent& _sky)
 				{
 					_sky.time = frost::wrap(_sky.time + delta * _scene->hoursPerSecond, 24.0f);
 				});
@@ -275,7 +262,7 @@ int main(int _argc, const char* _argv[])
 		app.addPlugins<frost::DevicePlugin>();
 
 		app.insertResource<frost::GraphicsResource>(
-			frost::GraphicsResource{ width, height });
+			frost::GraphicsResource{ width, height, frost::RendererType::Count /*auto*/ });
 		app.addPlugins<frost::GraphicsPlugin>();
 
 	}

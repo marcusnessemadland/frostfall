@@ -32,17 +32,23 @@ namespace frost
 		};
 	};
 
+	/// Mesh instance. Borrows the handle; copies and removal do not change ownership.
+	struct MeshComponent
+	{
+		MeshHandle handle;
+	};
+
 	/// World-space mesh transform. An absent component means identity.
-	struct Transform
+	struct TransformComponent
 	{
 		Vec3 position = { 0.0f, 0.0f, 0.0f };
 		Quaternion rotation = { 0.0f, 0.0f, 0.0f, 1.0f };
 		Vec3 scale = { 1.0f, 1.0f, 1.0f };
 	};
 
-	/// Procedural Perez atmosphere and its directional sunlight. Use one Sky for
+	/// Procedural Perez atmosphere and its directional sunlight. Use one SkyComponent for
 	/// the active view. The scene controls time; the renderer never advances it.
-	struct Sky
+	struct SkyComponent
 	{
 		enum Month
 		{
@@ -64,7 +70,7 @@ namespace frost
 
 	/// Create a mesh from a cooked asset after graphics startup. Always consumes
 	/// _mem, including on failure. Returns one owned reference, or an invalid handle.
-	/// MeshHandle components borrow this reference; component copies and removal
+	/// MeshComponent instances borrow this reference; component copies and removal
 	/// do not change its count. Call on the application thread.
 	MeshHandle createMesh(const Memory* _mem, Error* _err = ErrorIgnore{});
 
@@ -88,7 +94,7 @@ namespace frost
 
 	/// Camera pose and projection. Aspect ratio follows the drawable dimensions.
 	///
-	struct Camera
+	struct CameraComponent
 	{
 		/// World position and unit orientation. Identity looks along +Z, with +Y up.
 		///
@@ -114,7 +120,7 @@ namespace frost
 	/// Renderer camera selection. Assign another camera entity to switch views.
 	/// An unset, stale, or non-camera entity disables scene rendering.
 	///
-	struct ActiveCamera
+	struct ActiveCameraResource
 	{
 		Entity entity;
 	};
@@ -123,6 +129,26 @@ namespace frost
 
 namespace frost
 {
+	struct RendererType
+	{
+		enum Enum
+		{
+			Noop,       //!< No rendering.
+			Agc,        //!< AGC
+			Direct3D11, //!< Direct3D 11.0
+			Direct3D12, //!< Direct3D 12.0
+			Gnm,        //!< GNM
+			Metal,      //!< Metal
+			Nvn,        //!< NVN
+			OpenGLES,   //!< OpenGL ES 3.0+
+			OpenGL,     //!< OpenGL 4.3+
+			Vulkan,     //!< Vulkan
+			WebGPU,     //!< WebGPU
+
+			Count		//!< Auto detection.
+		};
+	};
+
 	struct GraphicsResource
 	{
 		/// Initial render width in pixels.
@@ -133,7 +159,13 @@ namespace frost
 		///
 		uint32_t height = 720;
 
+		/// Renderer backend graphics API .
+		///
+		RendererType::Enum type = RendererType::Count;
+
 		/// Maximum number of simultaneously loaded meshes.
+		///
+		/// TODO: Define macros for static arrays
 		///
 		uint16_t maxMeshes = 1024;
 	};
