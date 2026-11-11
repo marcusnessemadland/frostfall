@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026-2027 Marcus Nesse Madland. All rights reserved.
+ * License: https://github.com/marcusnessemadland/bx/blob/main/LICENSE
+ */
+
 #ifndef BX_PLUGIN_GRAPHICS_P_H_HEADER_GUARD
 #define BX_PLUGIN_GRAPHICS_P_H_HEADER_GUARD
 
@@ -10,12 +15,6 @@
 #include <frost/readerwriter.h>
 
 #include <meshoptimizer/src/meshoptimizer.h>
-
-namespace frost
-{
-	constexpr bgfx::ViewId kRenderPassGeometry = 0;
-
-} // namespace frost
 
 namespace frost
 {
@@ -333,7 +332,6 @@ namespace frost
 	}
 #endif // FROST_CPU_ENDIAN_BIG
 
-
 	static bool readMeshGroup(MemoryReader& _reader, MeshGroup& _group, Error* _err)
 	{
 		if (!readMeshBounds(_reader, _group.bounds, _err) || !readMeshLayout(_reader, _group.layout, _err) )
@@ -600,12 +598,13 @@ namespace frost
 
 } // namespace frost
 
-
 #include "vs_deferred_geom.bin.h"
 #include "fs_deferred_geom.bin.h"
 
 namespace frost
 {
+	constexpr bgfx::ViewId kRenderPassGeometry = 0;
+
 	static const bgfx::EmbeddedShader s_embeddedShaders[] =
 	{
 		BGFX_EMBEDDED_SHADER(vs_deferred_geom),
@@ -614,11 +613,13 @@ namespace frost
 		BGFX_EMBEDDED_SHADER_END()
 	};
 
+} // namespace frost
+
+namespace frost
+{
 	struct GBufferResource
 	{
 		bgfx::ProgramHandle program = BGFX_INVALID_HANDLE;
-		bgfx::UniformHandle u_normalMatrix = BGFX_INVALID_HANDLE;
-		bgfx::UniformHandle u_normalParams = BGFX_INVALID_HANDLE;
 
 		bgfx::FrameBufferHandle frameBuffer = BGFX_INVALID_HANDLE;
 		bgfx::TextureHandle textures[3] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
@@ -637,9 +638,6 @@ namespace frost
 				bgfx::createEmbeddedShader(s_embeddedShaders, type, "fs_deferred_geom"),
 				true
 			);
-
-			_gbuffer->u_normalMatrix = bgfx::createUniform("u_normalMatrix", bgfx::UniformType::Mat4);
-			_gbuffer->u_normalParams = bgfx::createUniform("u_normalParams", bgfx::UniformType::Vec4);
 
 			// Invalidate framebuffer so it gets created
 			_gbuffer->frameBuffer = BGFX_INVALID_HANDLE;
@@ -793,8 +791,6 @@ namespace frost
 						{
 							const MeshPrimitive& primitive = group.primitives[jj];
 							bgfx::setTransform(model);
-							bgfx::setUniform(_gbuffer->u_normalMatrix, normal);
-							bgfx::setUniform(_gbuffer->u_normalParams, normalParams);
 							bgfx::setVertexBuffer(0, group.vertexBuffer);
 							bgfx::setIndexBuffer(group.indexBuffer, primitive.startIndex, primitive.numIndices);
 							bgfx::setState(0
@@ -812,9 +808,6 @@ namespace frost
 
 		static void shutdown(ResMutT<GBufferResource> _gbuffer)
 		{
-			bgfx::destroy(_gbuffer->u_normalMatrix);
-			bgfx::destroy(_gbuffer->u_normalParams);
-
 			// Shaders are destroyed when program is destroyed
 			bgfx::destroy(_gbuffer->program);
 

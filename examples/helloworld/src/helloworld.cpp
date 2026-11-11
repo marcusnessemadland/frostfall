@@ -1,6 +1,6 @@
 /*
  * Copyright 2026-2027 Marcus Nesse Madland. All rights reserved.
- * License: See LICENSE in the project root.
+ * License: https://github.com/marcusnessemadland/bx/blob/main/LICENSE
  */
 
 // Engine
@@ -12,7 +12,6 @@
 // Plugins
 #include <device.h>
 #include <graphics.h>
-
 
 // TODO: Create SDL scancodes in device.h
 namespace frost
@@ -30,7 +29,8 @@ namespace frost
 		KeyRightShift = 229,
 		MouseRight = 1 << 2,
 	};
-}
+
+} // namespace frost
 
 namespace
 {
@@ -108,10 +108,16 @@ namespace
 		}
 	};
 
-	struct Scene
+} // namespace
+
+namespace
+{
+	struct SceneResource
 	{
+		// Assets
 		frost::MeshHandle mesh;
 
+		// Instances
 		enum Enum
 		{
 			Player,
@@ -119,14 +125,14 @@ namespace
 
 			Count
 		};
-		frost::Entity instances[Scene::Count];
+		frost::Entity instances[SceneResource::Count];
 	};
 
-	struct GameSystem
+	struct SceneSystem
 	{
-		static void startup(frost::World& _world, frost::ResMutT<frost::ActiveCamera> _activeCamera, frost::ResMutT<Scene> _scene)
+		static void startup(frost::World& _world, frost::ResMutT<frost::ActiveCamera> _activeCamera, frost::ResMutT<SceneResource> _scene)
 		{
-			// Load and create cube asset
+			// Load and create assets
 			frost::Error err;
 			frost::FileReader reader;
 			const frost::Memory* mem = NULL;
@@ -154,18 +160,18 @@ namespace
 			// Create floor
 			frost::Transform transform;
 			transform.scale = { 20.0f, 1.0f, 20.0f };
-			_scene->instances[Scene::Floor] = _world.spawn(_scene->mesh, transform).id();
+			_scene->instances[SceneResource::Floor] = _world.spawn(_scene->mesh, transform).id();
 
 			// Create flying camera entity.
 			frost::Camera camera;
 			camera.position = { 0.0f, 0.0f, -5.0f };
-			_scene->instances[Scene::Player] = _world.spawn(camera, FlyCameraController{}).id();
-			_activeCamera->entity = _scene->instances[Scene::Player]; // Active camera entity TODO: Figure out a better way for this?
+			_scene->instances[SceneResource::Player] = _world.spawn(camera, FlyCameraController{}).id();
+			_activeCamera->entity = _scene->instances[SceneResource::Player]; // Active camera entity TODO: Figure out a better way for this?
 		}
 
-		static void shutdown(frost::World& _world, frost::ResMutT<Scene> _scene)
+		static void shutdown(frost::World& _world, frost::ResMutT<SceneResource> _scene)
 		{
-			for (uint32_t ii = 0; ii < Scene::Count; ++ii)
+			for (uint32_t ii = 0; ii < SceneResource::Count; ++ii)
 			{
 				_world.despawn(_scene->instances[ii]);
 			}
@@ -174,18 +180,23 @@ namespace
 		}
 	};
 
+} // namespace
+
+namespace
+{
 	struct ExamplePlugin : frost::PluginI
 	{
 		virtual void build(frost::App& _app) override
 		{
-			_app.insertResource<Scene>(Scene{});
+			_app.insertResource<SceneResource>(SceneResource{});
 
-			_app.addSystems(frost::EcsStage::PostStartup, GameSystem::startup);
+			_app.addSystems(frost::EcsStage::PostStartup, SceneSystem::startup);
 			_app.addSystems(frost::EcsStage::Update, FlyCameraSystem::update);
-			_app.addSystems(frost::EcsStage::Shutdown, GameSystem::shutdown);
+			_app.addSystems(frost::EcsStage::Shutdown, SceneSystem::shutdown);
 		}
 	};
-}
+
+} // namespace
 
 static const frost::CommandLineOption s_options[] =
 {
@@ -238,7 +249,6 @@ int main(int _argc, const char* _argv[])
 	// Run app...
 	frost::App app(&allocator);
 	{
-		// Release example assets before graphics shuts down.
 		app.addPlugins<ExamplePlugin>();
 
 		app.insertResource<frost::DeviceResource>(
