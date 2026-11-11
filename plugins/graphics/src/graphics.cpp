@@ -48,10 +48,6 @@ namespace frost
 				swapChain.height = _display->height;
 				bgfx::reset(BGFX_RESET_NONE, &swapChain);
 			}
-
-			// This dummy draw call is here to make sure that view 0 is cleared
-			// if no other draw calls are submitted to view 0.
-			bgfx::touch(0);
 		}
 
 		static void postUpdate()
@@ -114,18 +110,30 @@ namespace frost
 		// Resources
 		_app.getWorld().initResource<ActiveCamera>();
 		_app.insertResource<GBufferResource>();
+		_app.insertResource<LightResource>();
+		_app.insertResource<SkyResource>();
+		_app.insertResource<CombineResource>();
 
 		// Systems
 		_app.addSystems(EcsStage::Startup, BgfxSystem::startup);
 
 		_app.addSystems(EcsStage::Startup, GBufferSystem::startup);
+		_app.addSystems(EcsStage::Startup, LightSystem::startup);
+		_app.addSystems(EcsStage::Startup, SkySystem::startup);
+		_app.addSystems(EcsStage::Startup, CombineSystem::startup);
 
 		_app.addSystems(EcsStage::PreUpdate, BgfxSystem::preUpdate);
 
 		_app.addSystems(EcsStage::PostUpdate, GBufferSystem::update);
+		_app.addSystems(EcsStage::PostUpdate, LightSystem::update);
+		_app.addSystems(EcsStage::PostUpdate, SkySystem::update);
+		_app.addSystems(EcsStage::PostUpdate, CombineSystem::update);
 
 		_app.addSystems(EcsStage::Last, BgfxSystem::postUpdate); // Swaps buffers
 
+		_app.addSystems(EcsStage::Shutdown, CombineSystem::shutdown);
+		_app.addSystems(EcsStage::Shutdown, SkySystem::shutdown);
+		_app.addSystems(EcsStage::Shutdown, LightSystem::shutdown);
 		_app.addSystems(EcsStage::Shutdown, GBufferSystem::shutdown);
 
 		_app.addSystems(EcsStage::Shutdown, BgfxSystem::shutdown);

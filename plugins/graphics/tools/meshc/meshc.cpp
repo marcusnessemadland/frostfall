@@ -289,6 +289,11 @@ void calcTangents(void* _vertices, uint16_t _numVertices, bgfx::VertexLayout _la
 		const float cav = v2.m_v - v0.m_v;
 
 		const float det = (bau * cav - bav * cau);
+		if (!bx::isFinite(det) || bx::abs(det) <= 1.0e-12f)
+		{
+			bx::printf("Cannot generate tangents: triangle %u has degenerate UVs.\n", ii);
+			exit(bx::kExitFailure);
+		}
 		const float invDet = 1.0f / det;
 
 		const float tx = (bax * cav - cax * bav) * invDet;
@@ -325,6 +330,11 @@ void calcTangents(void* _vertices, uint16_t _numVertices, bgfx::VertexLayout _la
 		const float    ndt     = bx::dot(normal, tanu);
 		const bx::Vec3 nxt     = bx::cross(normal, tanu);
 		const bx::Vec3 tmp     = bx::sub(tanu, bx::mul(normal, ndt) );
+		if (!bx::isFinite(bx::dot(tmp, tmp)) || bx::dot(tmp, tmp) <= 1.0e-12f)
+		{
+			bx::printf("Cannot generate tangents: vertex %u has an invalid tangent basis.\n", ii);
+			exit(bx::kExitFailure);
+		}
 
 		float tangent[4];
 		bx::store(tangent, bx::normalize(tmp) );
@@ -1313,6 +1323,24 @@ int main(int _argc, const char* _argv[])
 			for (TriangleArray::iterator it = mesh.m_triangles.begin(), itEnd = mesh.m_triangles.end(); it != itEnd; ++it)
 			{
 				bx::swap(it->m_index[1], it->m_index[2]);
+			}
+		}
+	}
+
+	if (hasTangent)
+	{
+		for (const TriIndices& triangle : mesh.m_triangles)
+		{
+			for (uint32_t ii = 0; ii < 3; ++ii)
+			{
+				const Index3& index = triangle.m_index[ii];
+				if (index.m_normal < 0 || index.m_texcoord < 0
+				|| size_t(index.m_normal) >= mesh.m_normals.size()
+				|| size_t(index.m_texcoord) >= mesh.m_texcoords.size())
+				{
+					help("--tangent requires normals and UVs on every triangle vertex.");
+					return bx::kExitFailure;
+				}
 			}
 		}
 	}

@@ -14,15 +14,23 @@ void main()
 	gl_Position = mul(u_viewProj, vec4(wpos, 1.0) );
 
 	vec4 normal = a_normal * 2.0 - 1.0;
-	vec3 wnormal = mul(u_model[0], vec4(normal.xyz, 0.0) ).xyz;
+	// For an SRT model, dividing by squared axis lengths before applying the
+	// model is equivalent to the inverse-transpose normal transform.
+	vec3 axisX = mul(u_model[0], vec4(1.0, 0.0, 0.0, 0.0) ).xyz;
+	vec3 axisY = mul(u_model[0], vec4(0.0, 1.0, 0.0, 0.0) ).xyz;
+	vec3 axisZ = mul(u_model[0], vec4(0.0, 0.0, 1.0, 0.0) ).xyz;
+	vec3 scaleSquared = vec3(dot(axisX, axisX), dot(axisY, axisY), dot(axisZ, axisZ));
+	vec3 wnormal = mul(u_model[0], vec4(normal.xyz / scaleSquared, 0.0) ).xyz;
 
 	vec4 tangent = a_tangent * 2.0 - 1.0;
 	vec3 wtangent = mul(u_model[0], vec4(tangent.xyz, 0.0) ).xyz;
 
 	vec3 viewNormal = normalize(mul(u_view, vec4(wnormal, 0.0) ).xyz);
-	vec3 viewTangent = normalize(mul(u_view, vec4(wtangent, 0.0) ).xyz);
-	vec3 viewBitangent = cross(viewNormal, viewTangent) * tangent.w;
-	mat3 tbn = mat3(viewTangent, viewBitangent, viewNormal);
+	vec3 viewTangent = mul(u_view, vec4(wtangent, 0.0) ).xyz;
+	viewTangent = normalize(viewTangent - viewNormal * dot(viewNormal, viewTangent));
+	float mirrorSign = dot(cross(axisX, axisY), axisZ) < 0.0 ? -1.0 : 1.0;
+	vec3 viewBitangent = cross(viewNormal, viewTangent) * tangent.w * mirrorSign;
+	mat3 tbn = mtxFromCols(viewTangent, viewBitangent, viewNormal);
 
 	v_wpos = wpos;
 

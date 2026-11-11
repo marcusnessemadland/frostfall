@@ -4,7 +4,7 @@ CMakeFiles
 CMakeScripts
 Testing
 Makefile
-!examples/helloworld/makefile
+!examples/helloworld/offline/makefile
 cmake_install.cmake
 install_manifest.txt
 compile_commands.json

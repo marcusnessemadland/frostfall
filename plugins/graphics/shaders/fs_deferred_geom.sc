@@ -16,7 +16,7 @@ void main()
 	normal.xy = normalMapPlaceholder.xy * 2.0 - 1.0;
 	normal.z  = sqrt(1.0 - dot(normal.xy, normal.xy) );
 
-	mat3 tbn = mat3(
+	mat3 tbn = mtxFromCols(
 				normalize(v_tangent),
 				normalize(v_bitangent),
 				normalize(v_normal)

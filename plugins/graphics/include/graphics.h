@@ -40,6 +40,28 @@ namespace frost
 		Vec3 scale = { 1.0f, 1.0f, 1.0f };
 	};
 
+	/// Procedural Perez atmosphere and its directional sunlight. Use one Sky for
+	/// the active view. The scene controls time; the renderer never advances it.
+	struct Sky
+	{
+		enum Month
+		{
+			January, February, March, April, May, June,
+			July, August, September, October, November, December,
+		};
+
+		float time = 12.0f;         //!< Hours, wrapped into [0, 24).
+		Month month = June;
+		float latitude = 50.0f;     //!< Degrees, north positive.
+		float turbidity = 2.15f;    //!< Atmospheric haziness, [1.9, 10].
+		float sunSize = 0.02f;
+		float sunBloom = 3.0f;
+		Vec3 sunTint = { 1.0f, 1.0f, 1.0f }; //!< Linear RGB multiplier.
+		float sunIntensity = 1.0f;  //!< Multiplier for direct sunlight and sun disk.
+		float exposure = 0.1f;      //!< Linear exposure for sky and surface sunlight.
+		bool preventBanding = true;
+	};
+
 	/// Create a mesh from a cooked asset after graphics startup. Always consumes
 	/// _mem, including on failure. Returns one owned reference, or an invalid handle.
 	/// MeshHandle components borrow this reference; component copies and removal

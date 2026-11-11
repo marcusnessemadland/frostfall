@@ -116,12 +116,15 @@ namespace
 	{
 		// Assets
 		frost::MeshHandle mesh;
+		frost::Ticks previous = frost::getNow();
+		float hoursPerSecond = 0.5f;
 
 		// Instances
 		enum Enum
 		{
 			Player,
 			Floor,
+			Sun,
 
 			Count
 		};
@@ -159,14 +162,29 @@ namespace
 
 			// Create floor
 			frost::Transform transform;
-			transform.scale = { 20.0f, 1.0f, 20.0f };
+			transform.scale = { 100.0f, 1.0f, 100.0f };
 			_scene->instances[SceneResource::Floor] = _world.spawn(_scene->mesh, transform).id();
+
+			// One component controls the visible atmosphere and its sunlight.
+			_scene->instances[SceneResource::Sun] = _world.spawn(frost::Sky{}).id();
+			_scene->previous = frost::getNow();
 
 			// Create flying camera entity.
 			frost::Camera camera;
-			camera.position = { 0.0f, 0.0f, -5.0f };
+			camera.position = { 0.0f, 3.0f, -5.0f };
 			_scene->instances[SceneResource::Player] = _world.spawn(camera, FlyCameraController{}).id();
 			_activeCamera->entity = _scene->instances[SceneResource::Player]; // Active camera entity TODO: Figure out a better way for this?
+		}
+
+		static void update(frost::ResMutT<SceneResource> _scene, frost::QueryT<frost::Sky&> _skies)
+		{
+			const frost::Ticks now = frost::getNow();
+			const float delta = frost::min(frost::toSeconds<float>(now - _scene->previous), 0.1f);
+			_scene->previous = now;
+			_skies.get(_scene->instances[SceneResource::Sun], [&](frost::Sky& _sky)
+				{
+					_sky.time = frost::wrap(_sky.time + delta * _scene->hoursPerSecond, 24.0f);
+				});
 		}
 
 		static void shutdown(frost::World& _world, frost::ResMutT<SceneResource> _scene)
@@ -192,6 +210,7 @@ namespace
 
 			_app.addSystems(frost::EcsStage::PostStartup, SceneSystem::startup);
 			_app.addSystems(frost::EcsStage::Update, FlyCameraSystem::update);
+			_app.addSystems(frost::EcsStage::Update, SceneSystem::update);
 			_app.addSystems(frost::EcsStage::Shutdown, SceneSystem::shutdown);
 		}
 	};
