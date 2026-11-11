@@ -506,10 +506,10 @@ namespace frost
 		{
 			switch (_protect)
 			{
-			case Memory::ProtectRead:      return PROT_READ;
-			case Memory::ProtectReadWrite: return PROT_READ | PROT_WRITE;
-			case Memory::ProtectReadExec:  return PROT_READ | PROT_EXEC;
-			case Memory::ProtectNone:      // fall through
+			case OsMemory::ProtectRead:      return PROT_READ;
+			case OsMemory::ProtectReadWrite: return PROT_READ | PROT_WRITE;
+			case OsMemory::ProtectReadExec:  return PROT_READ | PROT_EXEC;
+			case OsMemory::ProtectNone:      // fall through
 			default:                       return PROT_NONE;
 			}
 		}
@@ -518,11 +518,11 @@ namespace frost
 		{
 			switch (_advise)
 			{
-			case Memory::Normal:           return MADV_NORMAL;
-			case Memory::SequentialAccess: return MADV_SEQUENTIAL;
-			case Memory::RandomAccess:     return MADV_RANDOM;
-			case Memory::Prefetch:         return MADV_WILLNEED;
-			case Memory::DontNeed:         return MADV_DONTNEED;
+			case OsMemory::Normal:           return MADV_NORMAL;
+			case OsMemory::SequentialAccess: return MADV_SEQUENTIAL;
+			case OsMemory::RandomAccess:     return MADV_RANDOM;
+			case OsMemory::Prefetch:         return MADV_WILLNEED;
+			case OsMemory::DontNeed:         return MADV_DONTNEED;
 			default:                       return -1;
 			}
 		}
