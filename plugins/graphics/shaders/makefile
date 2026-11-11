@@ -10,8 +10,10 @@ CS_FLAGS += -i $(BGFX_DIR)/examples/common/
 
 include $(BGFX_DIR)/scripts/shader-embeded.mk
 
-# Use the renderer-owned tool by default. SHADERC=... can select a local build.
-SHADERC := "../tools/bin/$(OS)/shaderc$(if $(filter windows,$(OS)),.exe)"
+# Set BUILD_DIR and CONFIG to select another CMake build, or override SHADERC.
+BUILD_DIR ?= ../../../build
+CONFIG ?= Debug
+SHADERC := "$(BUILD_DIR)/$(CONFIG)/$(FROST_TOOLS_PREFIX)shaderc$(if $(filter windows,$(OS)),.exe)"
 
 # Direct3D compilation is available on Windows and Linux (Linux DXBC needs Wine).
 # macOS builds the portable profiles and Metal. Override SHADER_PROFILES to select

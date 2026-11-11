@@ -1,7 +1,0 @@
-file(GLOB GEOMETRYC_SOURCES CONFIGURE_DEPENDS "*.cpp" "*.h")
-file(GLOB GEOMETRYC_MESHOPTIMIZER_SOURCES CONFIGURE_DEPENDS "${BGFX_DIR}/3rdparty/meshoptimizer/src/*.cpp")
-add_executable(geometryc ${GEOMETRYC_SOURCES} ${GEOMETRYC_MESHOPTIMIZER_SOURCES})
-target_link_libraries(geometryc PRIVATE bx bgfx-vertexlayout)
-target_include_directories(geometryc PRIVATE "${BGFX_DIR}/src" "${BGFX_DIR}/3rdparty")
-target_compile_definitions(geometryc PRIVATE _CRT_SECURE_NO_WARNINGS)
-frost_graphics_tool(geometryc)

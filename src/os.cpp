@@ -531,10 +531,10 @@ namespace frost
 		{
 			switch (_protect)
 			{
-			case Memory::ProtectRead:      return PAGE_READONLY;
-			case Memory::ProtectReadWrite: return PAGE_READWRITE;
-			case Memory::ProtectReadExec:  return PAGE_EXECUTE_READ;
-			case Memory::ProtectNone:      // fall through
+			case OsMemory::ProtectRead:      return PAGE_READONLY;
+			case OsMemory::ProtectReadWrite: return PAGE_READWRITE;
+			case OsMemory::ProtectReadExec:  return PAGE_EXECUTE_READ;
+			case OsMemory::ProtectNone:      // fall through
 			default:                       return PAGE_NOACCESS;
 			}
 		}
@@ -545,10 +545,10 @@ namespace frost
 	{
 		FROST_ERROR_SCOPE(_err);
 
-		const uint32_t state   = _flags & Memory::StateMask;
-		const uint32_t protect = _flags & Memory::ProtectMask;
-		const uint32_t advise  = _flags & Memory::AdviseMask;
-		const uint32_t page    = _flags & Memory::PageMask;
+		const uint32_t state   = _flags & OsMemory::StateMask;
+		const uint32_t protect = _flags & OsMemory::ProtectMask;
+		const uint32_t advise  = _flags & OsMemory::AdviseMask;
+		const uint32_t page    = _flags & OsMemory::PageMask;
 
 		const size_t granularity = memoryAllocationGranularity();
 		FROST_ASSERT(_alignment <= granularity, "Alignments greater than the allocation granularity are not implemented (requested %zu, granularity %zu).", _alignment, granularity);
@@ -557,7 +557,7 @@ namespace frost
 #if FROST_PLATFORM_ANDROID || FROST_PLATFORM_IOS || FROST_PLATFORM_LINUX || FROST_PLATFORM_OSX
 		if (NULL == _address)
 		{
-			if (0 == (state & Memory::Reserve) )
+			if (0 == (state & OsMemory::Reserve) )
 			{
 				FROST_ERROR_SET(_err, kErrorMemoryMapFailed, "memoryMap: Memory::Reserve required for fresh allocation.");
 				return NULL;
@@ -567,9 +567,9 @@ namespace frost
 
 			if (0 == effectiveProtect)
 			{
-				effectiveProtect = (Memory::Commit == (state & Memory::Commit) )
-					? Memory::ProtectReadWrite
-					: Memory::ProtectNone
+				effectiveProtect = (OsMemory::Commit == (state & OsMemory::Commit) )
+					? OsMemory::ProtectReadWrite
+					: OsMemory::ProtectNone
 					;
 			}
 
@@ -579,18 +579,18 @@ namespace frost
 				;
 
 #	ifdef MAP_NORESERVE
-			mmapFlags |= Memory::ProtectNone == effectiveProtect ? MAP_NORESERVE : 0;
+			mmapFlags |= OsMemory::ProtectNone == effectiveProtect ? MAP_NORESERVE : 0;
 #	endif // MAP_NORESERVE
 
 #	if FROST_PLATFORM_LINUX
-			if (0 != (page & Memory::PageHuge) )
+			if (0 != (page & OsMemory::PageHuge) )
 			{
 				mmapFlags |= MAP_HUGETLB;
 #		ifdef MAP_HUGE_1GB
 				mmapFlags |= MAP_HUGE_1GB;
 #		endif // MAP_HUGE_1GB
 			}
-			else if (0 != (page & Memory::PageLarge) )
+			else if (0 != (page & OsMemory::PageLarge) )
 			{
 				mmapFlags |= MAP_HUGETLB;
 #		ifdef MAP_HUGE_2MB
@@ -621,7 +621,7 @@ namespace frost
 			return result;
 		}
 
-		if (0 != (state & Memory::Decommit) )
+		if (0 != (state & OsMemory::Decommit) )
 		{
 			madvise(_address, _size, MADV_DONTNEED);
 			const int32_t prot = (0 != protect) ? toPosixProt(protect) : PROT_NONE;
@@ -631,9 +631,9 @@ namespace frost
 				return NULL;
 			}
 		}
-		else if (Memory::Commit == (state & Memory::Commit) )
+		else if (OsMemory::Commit == (state & OsMemory::Commit) )
 		{
-			const uint32_t effectiveProtect = (0 != protect) ? protect : Memory::ProtectReadWrite;
+			const uint32_t effectiveProtect = (0 != protect) ? protect : OsMemory::ProtectReadWrite;
 			if (0 != mprotect(_address, _size, toPosixProt(effectiveProtect) ) )
 			{
 				FROST_ERROR_SET(_err, kErrorMemoryMapFailed, "memoryMap: mprotect (commit) failed.");
@@ -663,7 +663,7 @@ namespace frost
 #elif FROST_PLATFORM_WINDOWS
 		if (NULL == _address)
 		{
-			if (0 == (state & Memory::Reserve) )
+			if (0 == (state & OsMemory::Reserve) )
 			{
 				FROST_ERROR_SET(_err, kErrorMemoryMapFailed, "memoryMap: Memory::Reserve required for fresh allocation.");
 				return NULL;
@@ -672,17 +672,17 @@ namespace frost
 			DWORD allocType = MEM_RESERVE;
 			DWORD winProtect = PAGE_NOACCESS;
 
-			if (Memory::Commit == (state & Memory::Commit) )
+			if (OsMemory::Commit == (state & OsMemory::Commit) )
 			{
 				allocType |= MEM_COMMIT;
-				winProtect = toWinProtect( (0 != protect) ? protect : Memory::ProtectReadWrite);
+				winProtect = toWinProtect( (0 != protect) ? protect : OsMemory::ProtectReadWrite);
 			}
 			else if (0 != protect)
 			{
 				winProtect = toWinProtect(protect);
 			}
 
-			if (0 != (page & (Memory::PageLarge | Memory::PageHuge) ) )
+			if (0 != (page & (OsMemory::PageLarge | OsMemory::PageHuge) ) )
 			{
 				allocType |= MEM_LARGE_PAGES;
 			}
@@ -699,7 +699,7 @@ namespace frost
 			return result;
 		}
 
-		if (0 != (state & Memory::Decommit) )
+		if (0 != (state & OsMemory::Decommit) )
 		{
 			if (!VirtualFree(_address, _size, MEM_DECOMMIT) )
 			{
@@ -707,9 +707,9 @@ namespace frost
 				return NULL;
 			}
 		}
-		else if (Memory::Commit == (state & Memory::Commit) )
+		else if (OsMemory::Commit == (state & OsMemory::Commit) )
 		{
-			const DWORD winProtect = toWinProtect( (0 != protect) ? protect : Memory::ProtectReadWrite);
+			const DWORD winProtect = toWinProtect( (0 != protect) ? protect : OsMemory::ProtectReadWrite);
 			if (NULL == VirtualAlloc(_address, _size, MEM_COMMIT, winProtect) )
 			{
 				FROST_ERROR_SET(_err, kErrorMemoryMapFailed, "memoryMap: VirtualAlloc(MEM_COMMIT) failed.");
@@ -726,7 +726,7 @@ namespace frost
 			}
 		}
 
-		if (Memory::DontNeed == advise)
+		if (OsMemory::DontNeed == advise)
 		{
 			VirtualAlloc(_address, _size, MEM_RESET, PAGE_NOACCESS);
 			VirtualUnlock(_address, _size);
@@ -773,20 +773,20 @@ namespace frost
 
 	size_t memoryPageSize(uint32_t _flags)
 	{
-		const uint32_t page = _flags & Memory::PageMask;
+		const uint32_t page = _flags & OsMemory::PageMask;
 
 #if FROST_PLATFORM_ANDROID || FROST_PLATFORM_IOS || FROST_PLATFORM_LINUX || FROST_PLATFORM_OSX
-		if (0 != (page & Memory::PageHuge) )
+		if (0 != (page & OsMemory::PageHuge) )
 		{
 			return 1ull << 30; // 1 GiB nominal
 		}
-		if (0 != (page & Memory::PageLarge) )
+		if (0 != (page & OsMemory::PageLarge) )
 		{
 			return 2ull << 20; // 2 MiB nominal
 		}
 		return sysconf(_SC_PAGESIZE);
 #elif FROST_PLATFORM_WINDOWS
-		if (0 != (page & (Memory::PageLarge | Memory::PageHuge) ) )
+		if (0 != (page & (OsMemory::PageLarge | OsMemory::PageHuge) ) )
 		{
 			return ::GetLargePageMinimum();
 		}

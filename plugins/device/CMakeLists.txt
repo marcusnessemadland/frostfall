@@ -1,7 +1,4 @@
 # 3rdparty sdl
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIGURATION>")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIGURATION>")
-
 add_subdirectory(3rdparty/sdl EXCLUDE_FROM_ALL)
 
 set_target_properties(SDL_uclibc PROPERTIES FOLDER "frost/plugins/device/3rdparty")

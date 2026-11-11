@@ -12,7 +12,11 @@ target_include_directories(shaderc PRIVATE
 	"${BGFX_DIR}/3rdparty"
 	"${BGFX_DIR}/3rdparty/dawn/src"
 )
-frost_graphics_tool(shaderc)
+set_target_properties(shaderc PROPERTIES
+	FOLDER "frost/plugins/graphics/tools"
+	OUTPUT_NAME "${FROST_TOOLS_PREFIX}shaderc"
+)
+add_executable(frost::shaderc ALIAS shaderc)
 
 # The Direct3D compilers are loaded dynamically, relative to the executable.
 if(WIN32)
@@ -32,13 +36,11 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 		"${BGFX_DIR}/3rdparty/directx-headers/include/wsl/stubs"
 		"${BGFX_DIR}/3rdparty/d3d4linux/include"
 	)
-	set(SHADERC_RUNTIME_FILES "${BGFX_DIR}/tools/bin/linux/libdxcompiler.so" "${BGFX_DIR}/tools/bin/linux/libdxil.so")
-	add_custom_command(TARGET shaderc POST_BUILD
-		COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:shaderc>/../windows"
-		COMMAND ${CMAKE_COMMAND} -E copy_if_different
-			"${BGFX_DIR}/tools/bin/windows/d3d4linux.exe" "${BGFX_DIR}/tools/bin/windows/d3dcompiler_47.dll"
-			"$<TARGET_FILE_DIR:shaderc>/../windows"
-		VERBATIM
+	set(SHADERC_RUNTIME_FILES
+		"${BGFX_DIR}/tools/bin/linux/libdxcompiler.so"
+		"${BGFX_DIR}/tools/bin/linux/libdxil.so"
+		"${BGFX_DIR}/tools/bin/windows/d3d4linux.exe"
+		"${BGFX_DIR}/tools/bin/windows/d3dcompiler_47.dll"
 	)
 endif()
 if(SHADERC_RUNTIME_FILES)

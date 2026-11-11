@@ -66,7 +66,7 @@ endif()
 
 # Link against psapi on Windows
 if(WIN32)
-	target_link_libraries(frost PUBLIC psapi)
+	target_link_libraries(frost PUBLIC psapi bcrypt)
 endif()
 
 # Additional dependencies on Unix

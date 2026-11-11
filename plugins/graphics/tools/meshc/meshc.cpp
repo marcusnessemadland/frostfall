@@ -5,6 +5,8 @@
 
 #include <algorithm>
 
+#include <graphics.h>
+
 #include <bx/string.h>
 #include <bgfx/bgfx.h>
 #include "vertexlayout.h"
@@ -20,8 +22,8 @@ namespace stl = tinystl;
 #define CGLTF_IMPLEMENTATION
 #include <cgltf/cgltf.h>
 
-#define BGFX_GEOMETRYC_VERSION_MAJOR 1
-#define BGFX_GEOMETRYC_VERSION_MINOR 0
+#define FROST_MESHC_VERSION_MAJOR 1
+#define FROST_MESHC_VERSION_MINOR 0
 
 #if 0
 #	define BX_TRACE(_format, ...) \
@@ -151,12 +153,6 @@ struct Mesh
 
 static uint32_t s_obbSteps = 17;
 
-constexpr uint32_t kChunkVertexBuffer           = BX_MAKEFOURCC('V', 'B', ' ', 0x1);
-constexpr uint32_t kChunkVertexBufferCompressed = BX_MAKEFOURCC('V', 'B', 'C', 0x0);
-constexpr uint32_t kChunkIndexBuffer            = BX_MAKEFOURCC('I', 'B', ' ', 0x0);
-constexpr uint32_t kChunkIndexBufferCompressed  = BX_MAKEFOURCC('I', 'B', 'C', 0x1);
-constexpr uint32_t kChunkPrimitive              = BX_MAKEFOURCC('P', 'R', 'I', 0x0);
-
 void optimizeVertexCache(uint16_t* _indices, uint32_t _numIndices, uint32_t _numVertices)
 {
 	uint16_t* newIndexList = new uint16_t[_numIndices];
@@ -193,6 +189,12 @@ void writeCompressedIndices(
 	unsigned char* compressedIndices = (unsigned char*)malloc(maxSize);
 
 	size_t compressedSize = meshopt_encodeIndexBuffer(compressedIndices, maxSize, _indices, _numIndices);
+	if (0 == compressedSize)
+	{
+		free(compressedIndices);
+		BX_ERROR_SET(_err, bx::kErrorReaderWriterWrite, "Unable to compress mesh indices.");
+		return;
+	}
 
 	bx::printf("Indices uncompressed: %10d, compressed: %10d, ratio: %0.2f%%\n"
 		, _numIndices*2
@@ -200,7 +202,7 @@ void writeCompressedIndices(
 		, 100.0f - float(compressedSize ) / float(_numIndices*2)*100.0f
 		);
 
-	bx::write(_writer, (uint32_t)compressedSize, _err);
+	bx::writeLE(_writer, (uint32_t)compressedSize, _err);
 	bx::write(_writer, compressedIndices, (uint32_t)compressedSize, _err);
 
 	free(compressedIndices);
@@ -218,6 +220,12 @@ void writeCompressedVertices(
 	unsigned char* compressedVertices = (unsigned char*)malloc(maxSize);
 
 	size_t compressedSize = meshopt_encodeVertexBuffer(compressedVertices, maxSize, _vertices, _numVertices, _stride);
+	if (0 == compressedSize)
+	{
+		free(compressedVertices);
+		BX_ERROR_SET(_err, bx::kErrorReaderWriterWrite, "Unable to compress mesh vertices.");
+		return;
+	}
 
 	bx::printf("Vertices uncompressed: %10d, compressed: %10d, ratio: %0.2f%%\n"
 		, _numVertices * _stride
@@ -225,7 +233,7 @@ void writeCompressedVertices(
 		, 100.0f - float(compressedSize) / float(_numVertices * _stride)*100.0f
 		);
 
-	bx::write(_writer, (uint32_t)compressedSize, _err);
+	bx::writeLE(_writer, (uint32_t)compressedSize, _err);
 	bx::write(_writer, compressedVertices, (uint32_t)compressedSize, _err);
 
 	free(compressedVertices);
@@ -328,6 +336,60 @@ void calcTangents(void* _vertices, uint16_t _numVertices, bgfx::VertexLayout _la
 	delete [] tangents;
 }
 
+#if BX_CPU_ENDIAN_BIG
+static void swapMeshVertices(void* _data, uint32_t _count, const bgfx::VertexLayout& _layout)
+{
+	for (uint32_t ii = 0; ii < bgfx::Attrib::Count; ++ii)
+	{
+		const bgfx::Attrib::Enum attr = bgfx::Attrib::Enum(ii);
+		if (!_layout.has(attr) )
+		{
+			continue;
+		}
+		uint8_t num;
+		bgfx::AttribType::Enum type;
+		bool normalized;
+		bool asInt;
+		_layout.decode(attr, num, type, normalized, asInt);
+		if (bgfx::AttribType::Int8 == type || bgfx::AttribType::Uint8 == type)
+		{
+			continue;
+		}
+		const uint32_t width = bgfx::AttribType::Int16 == type || bgfx::AttribType::Uint16 == type || bgfx::AttribType::Half == type ? 2 : 4;
+		const uint32_t components = bgfx::AttribType::Uint10 == type ? 1 : num;
+		for (uint32_t jj = 0; jj < _count; ++jj)
+		{
+			uint8_t* data = (uint8_t*)_data + jj * _layout.getStride() + _layout.getOffset(attr);
+			for (uint32_t kk = 0; kk < components; ++kk, data += width)
+			{
+				if (2 == width)
+				{
+					uint16_t value;
+					bx::memCopy(&value, data, sizeof(value) );
+					value = bx::endianSwap(value);
+					bx::memCopy(data, &value, sizeof(value) );
+				}
+				else
+				{
+					uint32_t value;
+					bx::memCopy(&value, data, sizeof(value) );
+					value = bx::endianSwap(value);
+					bx::memCopy(data, &value, sizeof(value) );
+				}
+			}
+		}
+	}
+}
+#endif // BX_CPU_ENDIAN_BIG
+
+
+static void writeMeshFloat(bx::WriterI* _writer, float _value, bx::Error* _err)
+{
+	uint32_t bits;
+	bx::memCopy(&bits, &_value, sizeof(bits) );
+	bx::writeLE(_writer, bits, _err);
+}
+
 void write(
 	  bx::WriterI* _writer
 	, const void* _vertices
@@ -337,27 +399,29 @@ void write(
 	)
 {
 	bx::Sphere maxSphere;
-	bx::calcMaxBoundingSphere(maxSphere, _vertices, _numVertices, _stride);
-
 	bx::Sphere minSphere;
+	bx::calcMaxBoundingSphere(maxSphere, _vertices, _numVertices, _stride);
 	bx::calcMinBoundingSphere(minSphere, _vertices, _numVertices, _stride);
-
-	if (minSphere.radius > maxSphere.radius)
-	{
-		bx::write(_writer, maxSphere, _err);
-	}
-	else
-	{
-		bx::write(_writer, minSphere, _err);
-	}
+	const bx::Sphere& sphere = minSphere.radius < maxSphere.radius ? minSphere : maxSphere;
 
 	bx::Aabb aabb;
 	bx::toAabb(aabb, _vertices, _numVertices, _stride);
-	bx::write(_writer, aabb, _err);
-
 	bx::Obb obb;
 	bx::calcObb(obb, _vertices, _numVertices, _stride, s_obbSteps);
-	bx::write(_writer, obb, _err);
+
+	const float bounds[] =
+	{
+		sphere.center.x, sphere.center.y, sphere.center.z, sphere.radius,
+		aabb.min.x, aabb.min.y, aabb.min.z, aabb.max.x, aabb.max.y, aabb.max.z,
+	};
+	for (uint32_t ii = 0; ii < BX_COUNTOF(bounds); ++ii)
+	{
+		writeMeshFloat(_writer, bounds[ii], _err);
+	}
+	for (uint32_t ii = 0; ii < BX_COUNTOF(obb.mtx); ++ii)
+	{
+		writeMeshFloat(_writer, obb.mtx[ii], _err);
+	}
 }
 
 void write(
@@ -373,67 +437,118 @@ void write(
 	, bx::Error* _err
 	)
 {
-	using namespace bx;
-	using namespace bgfx;
+	const uint16_t stride = _layout.getStride();
+	if (UINT16_MAX < _material.size() || UINT16_MAX < _primitives.size()
+	|| (_compress && (0 != stride % 4 || 256 < stride) ) )
+	{
+		BX_ERROR_SET(_err, bx::kErrorReaderWriterWrite, "Mesh group exceeds its format limits.");
+		return;
+	}
+	for (PrimitiveArray::const_iterator it = _primitives.begin(); it != _primitives.end(); ++it)
+	{
+		if (UINT16_MAX < it->m_name.size() )
+		{
+			BX_ERROR_SET(_err, bx::kErrorReaderWriterWrite, "Mesh primitive name is too long.");
+			return;
+		}
+	}
+	write(_writer, _vertices, _numVertices, stride, _err);
 
-	uint32_t stride = _layout.getStride();
+	uint16_t numAttributes = 0;
+	for (uint32_t ii = 0; ii < bgfx::Attrib::Count; ++ii)
+	{
+		numAttributes += _layout.has(bgfx::Attrib::Enum(ii) ) ? 1 : 0;
+	}
+	bx::writeLE(_writer, stride, _err);
+	bx::writeLE(_writer, numAttributes, _err);
+
+	// Preserve offsets and attribute order independently of enum ordering.
+	for (uint16_t offset = 0; offset < stride; ++offset)
+	{
+		for (uint32_t ii = 0; ii < bgfx::Attrib::Count; ++ii)
+		{
+			const bgfx::Attrib::Enum attr = bgfx::Attrib::Enum(ii);
+			if (_layout.has(attr) && offset == _layout.getOffset(attr) )
+			{
+				uint8_t num;
+				bgfx::AttribType::Enum type;
+				bool normalized;
+				bool asInt;
+				_layout.decode(attr, num, type, normalized, asInt);
+				bx::write(_writer, uint8_t(attr), _err);
+				bx::write(_writer, num, _err);
+				bx::write(_writer, uint8_t(type), _err);
+				bx::write(_writer, uint8_t( (normalized ? 1 : 0) | (asInt ? 2 : 0) ), _err);
+				bx::writeLE(_writer, offset, _err);
+				bx::writeLE(_writer, uint16_t(0), _err);
+			}
+		}
+	}
+
+	bx::writeLE(_writer, _numVertices, _err);
+	bx::writeLE(_writer, _numIndices, _err);
+	bx::writeLE(_writer, uint32_t(_compress ? frost::MeshFormat::VertexCompressed | frost::MeshFormat::IndexCompressed : 0), _err);
+	bx::writeLE(_writer, uint16_t(_material.size() ), _err);
+	bx::write(_writer, _material.c_str(), uint32_t(_material.size() ), _err);
+	bx::writeLE(_writer, uint16_t(_primitives.size() ), _err);
+
+	const uint8_t* vertexData = _vertices;
+#if BX_CPU_ENDIAN_BIG
+	uint8_t* encodedVertices = new uint8_t[_numVertices * stride];
+	bx::memCopy(encodedVertices, _vertices, _numVertices * stride);
+	swapMeshVertices(encodedVertices, _numVertices, _layout);
+	vertexData = encodedVertices;
+#endif // BX_CPU_ENDIAN_BIG
 
 	if (_compress)
 	{
-		write(_writer, kChunkVertexBufferCompressed, _err);
-		write(_writer, _vertices, _numVertices, stride, _err);
-
-		write(_writer, _layout);
-
-		write(_writer, uint16_t(_numVertices), _err);
-		writeCompressedVertices(_writer, _vertices, _numVertices, uint16_t(stride), _err);
-	}
-	else
-	{
-		write(_writer, kChunkVertexBuffer, _err);
-		write(_writer, _vertices, _numVertices, stride, _err);
-
-		write(_writer, _layout, _err);
-
-		write(_writer, uint16_t(_numVertices), _err);
-		write(_writer, _vertices, _numVertices*stride, _err);
-	}
-
-	if (_compress)
-	{
-		write(_writer, kChunkIndexBufferCompressed, _err);
-		write(_writer, _numIndices, _err);
-
+		writeCompressedVertices(_writer, vertexData, _numVertices, stride, _err);
 		writeCompressedIndices(_writer, _indices, _numIndices, _numVertices, _err);
 	}
 	else
 	{
-		write(_writer, kChunkIndexBuffer, _err);
-		write(_writer, _numIndices, _err);
-		write(_writer, _indices, _numIndices*2, _err);
+		bx::writeLE(_writer, uint32_t(_numVertices * stride), _err);
+		bx::write(_writer, vertexData, _numVertices * stride, _err);
+		bx::writeLE(_writer, uint32_t(_numIndices * sizeof(uint16_t) ), _err);
+		for (uint32_t ii = 0; ii < _numIndices; ++ii)
+		{
+			bx::writeLE(_writer, _indices[ii], _err);
+		}
 	}
 
-	write(_writer, kChunkPrimitive, _err);
+#if BX_CPU_ENDIAN_BIG
+	delete [] encodedVertices;
+#endif // BX_CPU_ENDIAN_BIG
 
-	uint16_t nameLen = uint16_t(_material.size() );
-	write(_writer, nameLen, _err);
-
-	write(_writer, _material.c_str(), nameLen, _err);
-	write(_writer, uint16_t(_primitives.size() ), _err);
-
-	for (PrimitiveArray::const_iterator primIt = _primitives.begin(); primIt != _primitives.end(); ++primIt)
+	for (PrimitiveArray::const_iterator it = _primitives.begin(); it != _primitives.end(); ++it)
 	{
-		const Primitive& prim = *primIt;
-		nameLen = uint16_t(prim.m_name.size() );
-		write(_writer, nameLen, _err);
-		write(_writer, prim.m_name.c_str(), nameLen, _err);
-		write(_writer, prim.m_startIndex, _err);
-		write(_writer, prim.m_numIndices, _err);
-		write(_writer, prim.m_startVertex, _err);
-		write(_writer, prim.m_numVertices, _err);
-		write(_writer, &_vertices[prim.m_startVertex*stride], prim.m_numVertices, stride, _err);
+		const Primitive& prim = *it;
+		bx::writeLE(_writer, uint16_t(prim.m_name.size() ), _err);
+		bx::write(_writer, prim.m_name.c_str(), uint32_t(prim.m_name.size() ), _err);
+		bx::writeLE(_writer, prim.m_startIndex, _err);
+		bx::writeLE(_writer, prim.m_numIndices, _err);
+
+		// Vertex-fetch optimization can reorder vertices across primitive ranges.
+		// Bounds and ranges must be calculated from the resulting index buffer.
+		uint32_t firstVertex = UINT32_MAX;
+		uint32_t lastVertex = 0;
+		float* positions = new float[prim.m_numIndices * 3];
+		for (uint32_t ii = 0; ii < prim.m_numIndices; ++ii)
+		{
+			const uint16_t index = _indices[prim.m_startIndex + ii];
+			firstVertex = bx::min(firstVertex, uint32_t(index) );
+			lastVertex = bx::max(lastVertex, uint32_t(index) );
+			float position[4];
+			bgfx::vertexUnpack(position, bgfx::Attrib::Position, _layout, _vertices, index);
+			bx::memCopy(&positions[ii * 3], position, 3 * sizeof(float) );
+		}
+		bx::writeLE(_writer, firstVertex, _err);
+		bx::writeLE(_writer, lastVertex - firstVertex + 1, _err);
+		write(_writer, positions, prim.m_numIndices, 3 * sizeof(float), _err);
+		delete [] positions;
 	}
 }
+
 
 inline uint32_t rgbaToAbgr(uint8_t _r, uint8_t _g, uint8_t _b, uint8_t _a)
 {
@@ -608,9 +723,16 @@ void parseObj(char* _data, uint32_t _size, Mesh* _mesh, bool _hasBc)
 					}
 				}
 			}
-			else if (0 == bx::strCmp(argv[0], "g") )
+			else if (0 == bx::strCmp(argv[0], "g") || 0 == bx::strCmp(argv[0], "o") )
 			{
-				group.m_name = argv[1];
+				group.m_numTriangles = uint32_t(_mesh->m_triangles.size() ) - group.m_startTriangle;
+				if (0 < group.m_numTriangles)
+				{
+					_mesh->m_groups.push_back(group);
+					group.m_startTriangle = uint32_t(_mesh->m_triangles.size() );
+					group.m_numTriangles = 0;
+				}
+				group.m_name = 1 < argc ? argv[1] : "";
 			}
 			else if (*argv[0] == 'v')
 			{
@@ -916,6 +1038,7 @@ void parseGltf(char* _data, uint32_t _size, Mesh* _mesh, bool _hasBc, const bx::
 
 static const bx::CommandLineOption s_options[] =
 {
+	{ '\0', "guid",        1, "<guid>",      "Persistent asset GUID (required). Reuse it when rebuilding." },
 	{ 'h',  "help",        0, NULL,          "Display this help and exit."                                 },
 	{ 'v',  "version",     0, NULL,          "Output version information and exit."                        },
 	{ 'f',  NULL,          1, "<file path>", "Input's file path.\n"
@@ -952,17 +1075,17 @@ void help(const char* _error = NULL)
 	}
 
 	bx::printf(
-		  "geometryc, bgfx geometry compiler tool, version %d.%d.%d.\n"
+		  "meshc, frost mesh compiler tool, version %d.%d.%d.\n"
 		  "Copyright 2011-2026 Branimir Karadzic. All rights reserved.\n"
 		  "License: https://github.com/bkaradzic/bgfx/blob/master/LICENSE\n\n"
-		, BGFX_GEOMETRYC_VERSION_MAJOR
-		, BGFX_GEOMETRYC_VERSION_MINOR
+		, FROST_MESHC_VERSION_MAJOR
+		, FROST_MESHC_VERSION_MINOR
 		, BGFX_API_VERSION
 		);
 
 	bx::printf(
-		  "Usage: geometryc -f <in> -o <out>\n"
-		  "       geometryc <in> <out>\n"
+		  "Usage: meshc -f <in> -o <out>\n"
+		  "       meshc <in> <out>\n"
 
 		  "\n"
 		  "Supported input file types:\n"
@@ -989,9 +1112,9 @@ int main(int _argc, const char* _argv[])
 	if (cmdLine.hasArg('v', "version") )
 	{
 		bx::printf(
-			"geometryc, bgfx geometry compiler tool, version %d.%d.%d.\n"
-			, BGFX_GEOMETRYC_VERSION_MAJOR
-			, BGFX_GEOMETRYC_VERSION_MINOR
+			"meshc, frost mesh compiler tool, version %d.%d.%d.\n"
+			, FROST_MESHC_VERSION_MAJOR
+			, FROST_MESHC_VERSION_MINOR
 			, BGFX_API_VERSION
 		);
 		return bx::kExitSuccess;
@@ -1027,6 +1150,14 @@ int main(int _argc, const char* _argv[])
 	if (NULL == outFilePath)
 	{
 		help("Output file name must be specified.");
+		return bx::kExitFailure;
+	}
+
+	frost::Guid guid;
+	const char* guidArg = cmdLine.findOption("guid");
+	if (NULL == guidArg || !frost::fromString(&guid, guidArg) || !frost::isValid(guid) )
+	{
+		help("A valid persistent --guid must be specified.");
 		return bx::kExitFailure;
 	}
 
@@ -1271,6 +1402,17 @@ int main(int _argc, const char* _argv[])
 		exit(bx::kExitFailure);
 	}
 
+	frost::AssetHeader header;
+	header.type = frost::kAssetTypeMesh;
+	header.payloadVersion = frost::kMeshVersion;
+	header.guid = guid;
+	uint8_t headerBytes[frost::kAssetHeaderSize];
+	frost::writeAssetHeader(headerBytes, sizeof(headerBytes), header, frost::ErrorAssert{});
+	bx::Error err;
+	bx::write(&writer, headerBytes, sizeof(headerBytes), &err);
+	bx::writeLE(&writer, uint32_t(0), &err); // Group count, patched after compilation.
+	uint32_t numGroups = 0;
+
 	Primitive prim;
 	prim.m_startVertex = 0;
 	prim.m_startIndex  = 0;
@@ -1282,8 +1424,6 @@ int main(int _argc, const char* _argv[])
 	sentinelGroup.m_startTriangle = 0;
 	sentinelGroup.m_numTriangles = UINT32_MAX;
 	mesh.m_groups.push_back(sentinelGroup);
-
-	bx::Error err;
 
 	uint32_t ii = 0;
 	for (GroupArray::const_iterator groupIt = mesh.m_groups.begin(); groupIt != mesh.m_groups.end(); ++groupIt, ++ii)
@@ -1299,7 +1439,7 @@ int main(int _argc, const char* _argv[])
 				prim.m_numVertices = numVertices - prim.m_startVertex;
 				prim.m_numIndices  = numIndices  - prim.m_startIndex;
 
-				if (0 < prim.m_numVertices)
+				if (prim.m_startIndex < uint32_t(numIndices) )
 				{
 					primitives.push_back(prim);
 				}
@@ -1324,6 +1464,7 @@ int main(int _argc, const char* _argv[])
 				if (0 < numVertices
 				&&  0 < numIndices)
 				{
+					++numGroups;
 					write(&writer
 						, vertexData
 						, numVertices
@@ -1443,7 +1584,7 @@ int main(int _argc, const char* _argv[])
 		}
 
 		prim.m_numVertices = numVertices - prim.m_startVertex;
-		if (0 < prim.m_numVertices)
+		if (prim.m_startIndex < uint32_t(numIndices) )
 		{
 			prim.m_numIndices = numIndices - prim.m_startIndex;
 			prim.m_name = groupIt->m_name;
@@ -1462,8 +1603,23 @@ int main(int _argc, const char* _argv[])
 
 	BX_ASSERT(0 == primitives.size(), "Not all primitives are written");
 
-	bx::printf("size: %d\n", uint32_t(bx::seek(&writer) ) );
+	const int64_t outputSize = bx::seek(&writer);
+	if (0 == numGroups || outputSize > UINT32_MAX)
+	{
+		BX_ERROR_SET(&err, bx::kErrorReaderWriterWrite, "Mesh is empty or exceeds the asset size limit.");
+	}
+	header.payloadSize = uint32_t(outputSize - frost::kAssetHeaderSize);
+	frost::writeAssetHeader(headerBytes, sizeof(headerBytes), header, frost::ErrorAssert{});
+	bx::seek(&writer, 0, bx::Whence::Begin);
+	bx::write(&writer, headerBytes, sizeof(headerBytes), &err);
+	bx::writeLE(&writer, numGroups, &err);
+	bx::printf("size: %d\n", uint32_t(outputSize) );
 	bx::close(&writer);
+	if (!err.isOk() )
+	{
+		bx::remove(outFilePath);
+		bx::printf("Unable to write mesh asset: %s\n", err.getMessage().getCPtr() );
+	}
 
 	delete [] table;
 	delete [] indexData;
@@ -1481,5 +1637,5 @@ int main(int _argc, const char* _argv[])
 		, writtenIndices
 		);
 
-	return bx::kExitSuccess;
+	return err.isOk() ? bx::kExitSuccess : bx::kExitFailure;
 }

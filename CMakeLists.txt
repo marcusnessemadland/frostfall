@@ -21,8 +21,11 @@ cmake_dependent_option(FROST_BUILD_TOOLS_BIN2C "Build frost binary to c converte
 # TODO: Honor FROST_LIBRARY_TYPE once the C++ code supports DLL export/import annotations.
 set(FROST_LIBRARY_TYPE "STATIC" CACHE STRING "Linking type for library")
 set_property(CACHE FROST_LIBRARY_TYPE PROPERTY STRINGS "STATIC" "SHARED")
-
 # TODO: Declare installation options and provide exported targets and a CMake package config.
+
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>")
 
 if(NOT FROST_DIR)
 	set(FROST_DIR "${CMAKE_CURRENT_SOURCE_DIR}" CACHE STRING "Location of frost.")

@@ -24,7 +24,7 @@ namespace frost
 	/// Virtual memory flags used by `memoryMap`, `memoryUnmap`, and `memoryPageSize`.
 	/// Flags are grouped into mutually exclusive fields (State, Protection, Page, Advise).
 	/// Zero in a field means "no change" to that aspect of an existing region.
-	struct Memory
+	struct OsMemory
 	{
 		enum Enum : uint32_t
 		{

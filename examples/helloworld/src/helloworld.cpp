@@ -13,6 +13,7 @@
 #include <device.h>
 #include <graphics.h>
 
+
 // TODO: Create SDL scancodes in device.h
 namespace frost
 {
@@ -107,26 +108,88 @@ namespace
 		}
 	};
 
-	struct ExamplePlugin : frost::PluginI
+	struct Scene
 	{
-		static void startup(frost::World& _world, frost::ResMutT<frost::ActiveCamera> _activeCamera)
+		frost::MeshHandle mesh;
+
+		enum Enum
 		{
-			// Create flying camera entity
-			const frost::Entity entity = _world.spawn(frost::Camera{}, FlyCameraController{}).id();
-			_activeCamera->entity = entity; // Make sure this camera is used in the renderer
+			Player,
+			Floor,
+
+			Count
+		};
+		frost::Entity instances[Scene::Count];
+	};
+
+	struct GameSystem
+	{
+		static void startup(frost::World& _world, frost::ResMutT<frost::ActiveCamera> _activeCamera, frost::ResMutT<Scene> _scene)
+		{
+			// Load and create cube asset
+			frost::Error err;
+			frost::FileReader reader;
+			const frost::Memory* mem = NULL;
+			if (frost::open(&reader, "cube.mesh", &err) )
+			{
+				const int64_t size = frost::getSize(&reader);
+				if (0 < size && INT32_MAX >= size)
+				{
+					mem = frost::allocMemory(_world.getAllocator(), uint32_t(size) );
+					if (NULL != mem)
+					{
+						frost::read(&reader, mem->data, int32_t(size), &err);
+					}
+				}
+				frost::close(&reader);
+			}
+
+			_scene->mesh = frost::createMesh(mem, &err);
+			if (!frost::isValid(_scene->mesh) )
+			{
+				const frost::StringLiteral message = err.getMessage();
+				return;
+			}
+
+			// Create floor
+			frost::Transform transform;
+			transform.scale = { 20.0f, 1.0f, 20.0f };
+			_scene->instances[Scene::Floor] = _world.spawn(_scene->mesh, transform).id();
+
+			// Create flying camera entity.
+			frost::Camera camera;
+			camera.position = { 0.0f, 0.0f, -5.0f };
+			_scene->instances[Scene::Player] = _world.spawn(camera, FlyCameraController{}).id();
+			_activeCamera->entity = _scene->instances[Scene::Player]; // Active camera entity TODO: Figure out a better way for this?
 		}
 
+		static void shutdown(frost::World& _world, frost::ResMutT<Scene> _scene)
+		{
+			for (uint32_t ii = 0; ii < Scene::Count; ++ii)
+			{
+				_world.despawn(_scene->instances[ii]);
+			}
+
+			frost::release(_scene->mesh);
+		}
+	};
+
+	struct ExamplePlugin : frost::PluginI
+	{
 		virtual void build(frost::App& _app) override
 		{
-			_app.addSystems(frost::EcsStage::Startup, startup);
+			_app.insertResource<Scene>(Scene{});
+
+			_app.addSystems(frost::EcsStage::PostStartup, GameSystem::startup);
 			_app.addSystems(frost::EcsStage::Update, FlyCameraSystem::update);
+			_app.addSystems(frost::EcsStage::Shutdown, GameSystem::shutdown);
 		}
 	};
 }
 
 static const frost::CommandLineOption s_options[] =
 {
-	{ 'h',  "help",   0, NULL,       "Display this help and exit." },
+	{ 'h',   "help",   0, NULL,       "Display this help and exit." },
 	{ NULL,  "width",  1, "<width>",  "Startup window width.\n"     },
 	{ NULL,  "height", 1, "<height>", "Startup window height.\n"    }
 };
@@ -139,7 +202,6 @@ static void help(const char* _error = NULL)
 	}
 
 	frost::printf("helloworld, frost example.\n");
-	frost::printf("Camera: WASD move, Q/E descend/ascend, Shift boost, hold right mouse to look.\n");
 
 	frost::Error err;
 	frost::write(frost::getStdOut(), s_options, FROST_COUNTOF(s_options), &err);
@@ -176,15 +238,17 @@ int main(int _argc, const char* _argv[])
 	// Run app...
 	frost::App app(&allocator);
 	{
+		// Release example assets before graphics shuts down.
+		app.addPlugins<ExamplePlugin>();
+
 		app.insertResource<frost::DeviceResource>(
-			frost::DeviceResource{ "frost | helloworld example", width, height });
+			frost::DeviceResource{ "Frostfall Engine | Helloworld Example", width, height });
 		app.addPlugins<frost::DevicePlugin>();
 
 		app.insertResource<frost::GraphicsResource>(
 			frost::GraphicsResource{ width, height });
 		app.addPlugins<frost::GraphicsPlugin>();
 
-		app.addPlugins<ExamplePlugin>();
 	}
 	app.run();
 

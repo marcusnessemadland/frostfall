@@ -7,10 +7,52 @@
 #define BX_PLUGIN_GRAPHICS_H_HEADER_GUARD
 
 #include <frost/ecs.h>
+#include <frost/asset.h>
+#include <frost/handle.h>
 #include <frost/math.h>
 
 namespace frost
 {
+	FROST_HANDLE(MeshHandle);
+
+	FROST_ERROR_RESULT(kErrorMeshCreate, FROST_MAKEFOURCC('m', 's', 'h', 'c') );
+	FROST_ERROR_RESULT(kErrorMeshFormat, FROST_MAKEFOURCC('m', 's', 'h', 'f') );
+
+	constexpr uint32_t kAssetTypeMesh = FROST_MAKEFOURCC('M', 'E', 'S', 'H');
+	constexpr uint32_t kMeshVersion   = 1;
+
+	/// Mesh payload buffer encodings. All scalar fields are little endian.
+	struct MeshFormat
+	{
+		enum : uint32_t
+		{
+			VertexCompressed = 0x1,
+			IndexCompressed  = 0x2,
+			Index32          = 0x4,
+		};
+	};
+
+	/// World-space mesh transform. An absent component means identity.
+	struct Transform
+	{
+		Vec3 position = { 0.0f, 0.0f, 0.0f };
+		Quaternion rotation = { 0.0f, 0.0f, 0.0f, 1.0f };
+		Vec3 scale = { 1.0f, 1.0f, 1.0f };
+	};
+
+	/// Create a mesh from a cooked asset after graphics startup. Always consumes
+	/// _mem, including on failure. Returns one owned reference, or an invalid handle.
+	/// MeshHandle components borrow this reference; component copies and removal
+	/// do not change its count. Call on the application thread.
+	MeshHandle createMesh(const Memory* _mem, Error* _err = ErrorIgnore{});
+
+	/// Retain one reference to a live mesh. Handle copies do not retain it.
+	void addRef(MeshHandle _handle);
+
+	/// Release one reference. Zero releases the mesh and its GPU buffers.
+	/// An invalid handle is ignored. Release owned references before graphics stops.
+	void release(MeshHandle _handle);
+
 	struct CameraProjection
 	{
 		enum Enum
@@ -33,7 +75,7 @@ namespace frost
 
 		CameraProjection::Enum projection = CameraProjection::Perspective;
 
-		/// Vertical field of view in radians, used by perspective projection.
+		/// Vertical field of view in degrees, used by perspective projection.
 		///
 		float fov = 90.0f;
 
@@ -68,6 +110,10 @@ namespace frost
 		/// Initial render height in pixels.
 		///
 		uint32_t height = 720;
+
+		/// Maximum number of simultaneously loaded meshes.
+		///
+		uint16_t maxMeshes = 1024;
 	};
 
 	struct GraphicsPlugin : PluginI

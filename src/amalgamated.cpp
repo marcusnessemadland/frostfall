@@ -4,6 +4,7 @@
  */
 
 #include "allocator.cpp"
+#include "asset.cpp"
 #include "bitarray.cpp"
 #include "bounds.cpp"
 #include "frost.cpp"
@@ -16,8 +17,10 @@
 #include "file.cpp"
 #include "filepath.cpp"
 #include "hash.cpp"
+#include "guid.cpp"
 #include "literal-parser.cpp"
 #include "math.cpp"
+#include "memory.cpp"
 #include "mutex.cpp"
 #include "os.cpp"
 #include "process.cpp"

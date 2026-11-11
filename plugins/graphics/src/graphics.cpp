@@ -18,7 +18,7 @@ namespace frost
 
 	struct BgfxSystem
 	{
-		static void startup(ResT<GraphicsResource> _graphics, ResT<Display> _display)
+		static void startup(World& _world, ResT<GraphicsResource> _graphics, ResT<Display> _display)
 		{
 			bgfx::Init init;
 			init.type = bgfx::RendererType::Count; // auto
@@ -31,9 +31,10 @@ namespace frost
 			init.reset  = BGFX_RESET_NONE;
 			if (!bgfx::init(init))
 			{
-				debugPrintf("Failed to initialize bgfx context: %s\n");
+				debugPrintf("Failed to initialize bgfx context.\n");
 				return;
 			}
+			MeshSystem::startup(_world, _graphics);
 		}
 
 		static void preUpdate(ResT<Display> _display)
@@ -62,9 +63,47 @@ namespace frost
 
 		static void shutdown()
 		{
+			MeshSystem::shutdown();
 			bgfx::shutdown();
 		}
 	};
+
+} // namespace frost
+
+namespace frost
+{
+	MeshHandle createMesh(const Memory* _mem, Error* _err)
+	{
+		FROST_ERROR_SCOPE(_err);
+		const MeshHandle handle = meshCreate(_mem, _err);
+		release(_mem);
+		return handle;
+	}
+
+	void addRef(MeshHandle _handle)
+	{
+		MeshRef* mesh = getMeshRef(_handle);
+		FROST_ASSERT(NULL != mesh && UINT32_MAX != mesh->refCount, "Cannot retain an invalid or overflowing mesh reference.");
+		if (NULL != mesh && UINT32_MAX != mesh->refCount)
+		{
+			++mesh->refCount;
+		}
+	}
+
+	void release(MeshHandle _handle)
+	{
+		if (!isValid(_handle) )
+		{
+			return;
+		}
+		MeshRef* mesh = getMeshRef(_handle);
+		FROST_ASSERT(NULL != mesh && 0 != mesh->refCount, "Cannot release an invalid mesh reference.");
+		if (NULL != mesh && 0 != mesh->refCount && 0 == --mesh->refCount)
+		{
+			destroyMesh(*mesh);
+			s_meshContext->handles->free(_handle.idx);
+		}
+	}
 
 } // namespace frost
 
@@ -75,12 +114,10 @@ namespace frost
 		// Resources
 		_app.getWorld().initResource<ActiveCamera>();
 		_app.insertResource<GBufferResource>();
-		_app.insertResource<TempAssetsResource>();
 
 		// Systems
 		_app.addSystems(EcsStage::Startup, BgfxSystem::startup);
 
-		_app.addSystems(EcsStage::Startup, TempAssetsSystem::startup);
 		_app.addSystems(EcsStage::Startup, GBufferSystem::startup);
 
 		_app.addSystems(EcsStage::PreUpdate, BgfxSystem::preUpdate);
@@ -90,7 +127,6 @@ namespace frost
 		_app.addSystems(EcsStage::Last, BgfxSystem::postUpdate); // Swaps buffers
 
 		_app.addSystems(EcsStage::Shutdown, GBufferSystem::shutdown);
-		_app.addSystems(EcsStage::Shutdown, TempAssetsSystem::shutdown);
 
 		_app.addSystems(EcsStage::Shutdown, BgfxSystem::shutdown);
 	}

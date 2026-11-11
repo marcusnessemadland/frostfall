@@ -1,7 +1,7 @@
 # 3rdparty bgfx
 cmake_dependent_option(FROST_BUILD_TOOLS_SHADERC "Build graphics shader compiler." ON "FROST_BUILD_TOOLS;NOT CMAKE_CROSSCOMPILING" OFF)
 cmake_dependent_option(FROST_BUILD_TOOLS_TEXTUREC "Build graphics texture compiler." ON "FROST_BUILD_TOOLS;NOT CMAKE_CROSSCOMPILING" OFF)
-cmake_dependent_option(FROST_BUILD_TOOLS_GEOMETRYC "Build graphics geometry compiler." ON "FROST_BUILD_TOOLS;NOT CMAKE_CROSSCOMPILING" OFF)
+cmake_dependent_option(FROST_BUILD_TOOLS_MESHC "Build graphics mesh compiler." ON "FROST_BUILD_TOOLS;NOT CMAKE_CROSSCOMPILING" OFF)
 
 set(BGFX_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/bgfx/bgfx"

@@ -6,15 +6,13 @@
 #ifndef FROST_HANDLE_ALLOC_H_HEADER_GUARD
 #define FROST_HANDLE_ALLOC_H_HEADER_GUARD
 
-#include "frost.h"
+#include "handle.h"
 #include "allocator.h"
 #include "simd_t.h"
 #include "bitarray.h"
 
 namespace frost
 {
-	constexpr uint16_t kInvalidHandle = UINT16_MAX;
-
 	///
 	class HandleAlloc
 	{

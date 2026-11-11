@@ -105,7 +105,7 @@ namespace bgfx { namespace hlsl
 		bx::FilePath executableDir = bx::FilePath(bx::Dir::Executable).getPath();
 
 		bx::FilePath d3d4linuxExe(executableDir);
-		d3d4linuxExe.join("../windows/d3d4linux.exe");
+		d3d4linuxExe.join("d3d4linux.exe");
 
 		if (bx::stat(fi, d3d4linuxExe) )
 		{
@@ -118,7 +118,7 @@ namespace bgfx { namespace hlsl
 		}
 
 		bx::FilePath d3d4linuxDll(executableDir);
-		d3d4linuxDll.join("../windows/d3dcompiler_47.dll");
+		d3d4linuxDll.join("d3dcompiler_47.dll");
 
 		if (bx::stat(fi, d3d4linuxDll) )
 		{
