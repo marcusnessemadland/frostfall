@@ -739,61 +739,31 @@ namespace frost
 			}
 		}
 
-		static void destroyTargets(GBufferResource& _gbuffer)
+		static bool resize(GBufferResource& _gbuffer, uint32_t _width, uint32_t _height)
 		{
 			if (bgfx::isValid(_gbuffer.frameBuffer))
 			{
+				// Destroy current framebuffer if it exists
 				bgfx::destroy(_gbuffer.frameBuffer);
 			}
 
-			_gbuffer.frameBuffer = BGFX_INVALID_HANDLE;
-
-			for (bgfx::TextureHandle& texture : _gbuffer.textures)
-			{
-				if (bgfx::isValid(texture)) bgfx::destroy(texture);
-				texture = BGFX_INVALID_HANDLE;
-			}
-
-			_gbuffer.width = 0;
-			_gbuffer.height = 0;
-		}
-
-		static bool resize(GBufferResource& _gbuffer, uint32_t _width, uint32_t _height)
-		{
-			destroyTargets(_gbuffer);
-
 			const uint64_t flags = BGFX_TEXTURE_RT | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT
 				| BGFX_SAMPLER_MIP_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP;
+
+			// Not all platforms support D32F
 			const bgfx::TextureFormat::Enum depthFormat =
 				bgfx::isTextureValid(0, false, 1, bgfx::TextureFormat::D32F, flags)
 				? bgfx::TextureFormat::D32F : bgfx::TextureFormat::D24;
-
-			if (!bgfx::isTextureValid(0, false, 1, depthFormat, flags)
-			|| !bgfx::isTextureValid(0, false, 1, bgfx::TextureFormat::BGRA8, flags))
-			{
-				return false;
-			}
 
 			_gbuffer.textures[0] = bgfx::createTexture2D(uint16_t(_width), uint16_t(_height), false, 1, bgfx::TextureFormat::BGRA8, flags);
 			_gbuffer.textures[1] = bgfx::createTexture2D(uint16_t(_width), uint16_t(_height), false, 1, bgfx::TextureFormat::BGRA8, flags);
 			_gbuffer.textures[2] = bgfx::createTexture2D(uint16_t(_width), uint16_t(_height), false, 1, depthFormat, flags);
 
-			if (!bgfx::isValid(_gbuffer.textures[0]) || !bgfx::isValid(_gbuffer.textures[1])
-			|| !bgfx::isValid(_gbuffer.textures[2]))
-			{
-				destroyTargets(_gbuffer);
-				return false;
-			}
-
 			_gbuffer.frameBuffer = bgfx::createFrameBuffer(3, _gbuffer.textures, false);
-			if (!bgfx::isValid(_gbuffer.frameBuffer))
-			{
-				destroyTargets(_gbuffer);
-				return false;
-			}
 
 			_gbuffer.width = _width;
 			_gbuffer.height = _height;
+
 			return true;
 		}
 
@@ -839,9 +809,15 @@ namespace frost
 			_meshes.each([&](const MeshComponent& _mesh, const TransformComponent* _transform)
 			{
 				const MeshRef* mesh = getMeshRef(_mesh.handle);
-				if (NULL == mesh) return;
-				float model[16];
-				mtxIdentity(model);
+
+				if (NULL == mesh)
+				{
+					return;
+				}
+
+				float mtx[16];
+				mtxIdentity(mtx);
+
 				if (NULL != _transform)
 				{
 					const Vec3& scale = _transform->scale;
@@ -852,11 +828,11 @@ namespace frost
 					}
 
 					const Quaternion rotation = normalize(_transform->rotation);
-					store(&model[0], mul(toXAxis(rotation), scale.x));
-					store(&model[4], mul(toYAxis(rotation), scale.y));
-					store(&model[8], mul(toZAxis(rotation), scale.z));
+					store(&mtx[0], mul(toXAxis(rotation), scale.x));
+					store(&mtx[4], mul(toYAxis(rotation), scale.y));
+					store(&mtx[8], mul(toZAxis(rotation), scale.z));
 
-					store(&model[12], _transform->position);
+					store(&mtx[12], _transform->position);
 				}
 				for (uint32_t ii = 0; ii < mesh->numGroups; ++ii)
 				{
@@ -865,7 +841,7 @@ namespace frost
 					{
 						const MeshPrimitive& primitive = group.primitives[jj];
 
-						bgfx::setTransform(model);
+						bgfx::setTransform(mtx);
 						bgfx::setVertexBuffer(0, group.vertexBuffer);
 						bgfx::setIndexBuffer(group.indexBuffer, primitive.startIndex, primitive.numIndices);
 						bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
@@ -880,7 +856,10 @@ namespace frost
 
 		static void shutdown(ResMutT<GBufferResource> _gbuffer)
 		{
-			destroyTargets(*_gbuffer);
+			if (bgfx::isValid(_gbuffer->frameBuffer))
+			{
+				bgfx::destroy(_gbuffer->frameBuffer);
+			}
 
 			if (bgfx::isValid(_gbuffer->program))
 			{
@@ -888,6 +867,7 @@ namespace frost
 			}
 		}
 	};
+
 } // namespace frost
 
 // Sky model
@@ -1315,15 +1295,20 @@ namespace frost
 		static void startup(ResMutT<CombineResource> _combine)
 		{
 			bgfx::setViewName(kRenderPassCombine, "Combine");
+
 			const bgfx::RendererType::Enum type = bgfx::getRendererType();
 			_combine->program = bgfx::createProgram(
 				bgfx::createEmbeddedShader(s_embeddedShaders, type, "vs_deferred_combine"),
 				bgfx::createEmbeddedShader(s_embeddedShaders, type, "fs_deferred_combine"), true);
+
 			_combine->s_albedo = bgfx::createUniform("s_albedo", bgfx::UniformType::Sampler);
 			_combine->s_light = bgfx::createUniform("s_light", bgfx::UniformType::Sampler);
 			_combine->u_outputParameters = bgfx::createUniform("u_outputParameters", bgfx::UniformType::Vec4);
-			_combine->layout.begin().add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
-				.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float).end();
+
+			_combine->layout.begin()
+				.add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
+				.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float)
+			.end();
 		}
 
 		static void update(ResT<DisplayResource> _display, ResT<GBufferResource> _gbuffer,
@@ -1333,16 +1318,18 @@ namespace frost
 			{
 				return;
 			}
+
 			// Presentation owns the backbuffer clear, including frames without an active camera.
 			bgfx::setViewRect(kRenderPassCombine, 0, 0, uint16_t(_display->width), uint16_t(_display->height));
 			bgfx::setViewFrameBuffer(kRenderPassCombine, BGFX_INVALID_HANDLE);
 			bgfx::setViewClear(kRenderPassCombine, BGFX_CLEAR_COLOR, UINT32_C(0x000000ff));
 			bgfx::touch(kRenderPassCombine);
-			if (!_gbuffer->active || !_light->active || !bgfx::isValid(_combine->program)
-			|| !screenSpaceTriangle(_combine->layout))
+
+			if (!_gbuffer->active || !_light->active || !bgfx::isValid(_combine->program) || !screenSpaceTriangle(_combine->layout))
 			{
 				return;
 			}
+
 			float projection[16];
 			mtxOrtho(projection, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 100.0f, 0.0f, bgfx::getCaps()->homogeneousDepth);
 			float output[4] = {};
@@ -1351,22 +1338,32 @@ namespace frost
 					output[0] = _sky.preventBanding ? 1.0f : 0.0f;
 					output[1] = isFinite(_sky.time) ? wrap(_sky.time, 24.0f) : 12.0f;
 				});
+
 			bgfx::setViewTransform(kRenderPassCombine, NULL, projection);
+
 			bgfx::setUniform(_combine->u_outputParameters, output);
+
 			bgfx::setTexture(0, _combine->s_albedo, _gbuffer->textures[0]);
 			bgfx::setTexture(1, _combine->s_light, _light->texture);
+
 			bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+
 			bgfx::submit(kRenderPassCombine, _combine->program);
 		}
 
 		static void shutdown(ResMutT<CombineResource> _combine)
 		{
-			if (bgfx::isValid(_combine->program)) bgfx::destroy(_combine->program);
+			if (bgfx::isValid(_combine->program))
+			{
+				bgfx::destroy(_combine->program);
+			}
+
 			bgfx::destroy(_combine->s_albedo);
 			bgfx::destroy(_combine->s_light);
 			bgfx::destroy(_combine->u_outputParameters);
 		}
 	};
+
 } // namespace frost
 
 #endif // BX_PLUGIN_GRAPHICS_P_H_HEADER_GUARD

@@ -20,7 +20,10 @@ namespace
 		{
 			Player,
 			Floor,
-			Sun,
+			Box1,
+			Box2,
+			Box3,
+			Sky,
 
 			Count
 		};
@@ -57,27 +60,50 @@ namespace
 			}
 
 			// Create floor
-			frost::TransformComponent transform;
 			{
-				transform.scale = { 100.0f, 1.0f, 100.0f };
+				frost::TransformComponent transform;
+					transform.scale = { 100.0f, 1.0f, 100.0f };
+				_scene->instances[SceneResource::Floor] = _world.spawn(frost::MeshComponent{ _scene->mesh }, transform).id();
 			}
-			_scene->instances[SceneResource::Floor] = _world.spawn(frost::MeshComponent{ _scene->mesh }, transform).id();
 
-			// One component controls the visible atmosphere and its sunlight.
-			frost::SkyComponent sky;
+			// Create boxes
 			{
-				sky.hps = 0.5f;
+				frost::TransformComponent transform;
+				transform.position = { -3.0f, 2.0f, 0.0f };
+				transform.rotation = frost::rotateY(frost::toRad(20.0f));
+				transform.scale = { 1.0f, 1.0f, 1.0f };
+				_scene->instances[SceneResource::Box1] = _world.spawn(frost::MeshComponent{ _scene->mesh }, transform).id();
 			}
-			_scene->instances[SceneResource::Sun] = _world.spawn(sky).id();
+			{
+				frost::TransformComponent transform;
+				transform.position = { 0.0f, 3.0f, 2.5f };
+				transform.rotation = frost::rotateY(frost::toRad(-25.0f));
+				transform.scale = { 0.75f, 2.0f, 0.75f };
+				_scene->instances[SceneResource::Box2] = _world.spawn(frost::MeshComponent{ _scene->mesh }, transform).id();
+			}
+			{
+				frost::TransformComponent transform;
+				transform.scale = { 1.5f, 0.5f, 0.75f };
+				transform.rotation = frost::mul(frost::rotateY(frost::toRad(35.0f)), frost::rotateZ(frost::toRad(25.0f)));
+				transform.position = { 3.0f, 1.0f + transform.scale.x * frost::sin(frost::toRad(25.0f)) + transform.scale.y * frost::cos(frost::toRad(25.0f)), 0.0f };
+				_scene->instances[SceneResource::Box3] = _world.spawn(frost::MeshComponent{ _scene->mesh }, transform).id();
+			}
+
+			// Create sky
+			{
+				frost::SkyComponent sky;
+				sky.hps = 0.5f;
+				_scene->instances[SceneResource::Sky] = _world.spawn(sky).id();
+			}
 
 			// Create flying camera entity.
-			frost::CameraComponent camera;
 			{
+				frost::CameraComponent camera;
 				camera.position = { 0.0f, 3.0f, -5.0f };
+				_scene->instances[SceneResource::Player] = _world.spawn(camera, ExampleCameraComponent{}).id();
 			}
-			_scene->instances[SceneResource::Player] = _world.spawn(camera, ExampleCameraComponent{}).id();
 
-			// Active camera entity TODO: Figure out a better way for this?
+			// Active camera on player entity TODO: Figure out a better way for this?
 			_activeCamera->entity = _scene->instances[SceneResource::Player];
 		}
 
