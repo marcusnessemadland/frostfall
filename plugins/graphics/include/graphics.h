@@ -47,7 +47,7 @@ namespace frost
 	};
 
 	/// Procedural Perez atmosphere and its directional sunlight. Use one SkyComponent for
-	/// the active view. The scene controls time; the renderer never advances it.
+	/// the active view. SkySystem advances time at the configured hps.
 	struct SkyComponent
 	{
 		enum Month
@@ -57,6 +57,7 @@ namespace frost
 		};
 
 		float time = 12.0f;         //!< Hours, wrapped into [0, 24).
+		float hps = 0.0f;			//!< Sky hours per second;
 		Month month = June;
 		float latitude = 50.0f;     //!< Degrees, north positive.
 		float turbidity = 2.15f;    //!< Atmospheric haziness, [1.9, 10].

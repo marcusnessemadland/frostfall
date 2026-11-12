@@ -5,190 +5,16 @@
 
 // Engine
 #include <frost/ecs.h>
-#include <frost/file.h>
 #include <frost/commandline.h>
 
-// Plugins
-#include <device.h>
-#include <graphics.h>
-
-// TODO: Create SDL scancodes in device.h
-namespace frost
-{
-	// SDL scancodes and button mask, as exposed by the device Input resource.
-	enum : uint32_t
-	{
-		KeyA = 4,
-		KeyD = 7,
-		KeyE = 8,
-		KeyQ = 20,
-		KeyS = 22,
-		KeyW = 26,
-		KeyLeftShift = 225,
-		KeyRightShift = 229,
-		MouseRight = 1 << 2,
-	};
-
-} // namespace frost
+// Example
+#include "camera.h"
+#include "scene.h"
 
 namespace
 {
-	struct ExampleCameraComponent
-	{
-		float speed = 10.0f;
-		float boost = 3.0f;
-		float sensitivity = 0.002f;
-	};
-
-	struct FlyCameraSystem
-	{
-		static void update(
-			  frost::ResT<frost::TimeResource> _time
-			, frost::ResT<frost::InputResource> _input
-			, frost::ResT<frost::ActiveCameraResource> _activeCamera
-			, frost::QueryT<frost::CameraComponent&, const ExampleCameraComponent&> _cameras
-			)
-		{
-			const float delta = float(frost::min(_time->delta, 0.1));
-
-			// Dont process input if input is not in focus
-			if (!_input->focused)
-			{
-				return;
-			}
-
-			// Update the active example camera.
-			_cameras.get(_activeCamera->entity,
-				[&](frost::CameraComponent& _camera, const ExampleCameraComponent& _controller)
-				{
-					// Rotate camera
-					if (0 != (_input->mouseButtons & frost::MouseRight)
-					&& (0 != _input->mouseDeltaX || 0 != _input->mouseDeltaY) )
-					{
-						const frost::Vec3 forward = frost::mul({ 0.0f, 0.0f, 1.0f }, _camera.rotation);
-
-						const float yaw = frost::wrap(frost::atan2(forward.x, forward.z)
-							+ float(_input->mouseDeltaX) * _controller.sensitivity, frost::kPi2);
-						const float pitch = frost::clamp(frost::asin(frost::clamp(-forward.y, -1.0f, 1.0f))
-							+ float(_input->mouseDeltaY) * _controller.sensitivity,
-							-frost::toRad(89.0f), frost::toRad(89.0f));
-
-						_camera.rotation = frost::normalize(frost::mul(frost::rotateY(yaw), frost::rotateX(pitch)));
-					}
-
-					// Move camera
-					const frost::Vec3 forward = frost::mul({ 0.0f, 0.0f, 1.0f }, _camera.rotation);
-					const frost::Vec3 right = frost::mul({ 1.0f, 0.0f, 0.0f }, _camera.rotation);
-
-					const float forwardInput = float(_input->keys[frost::KeyW]) - float(_input->keys[frost::KeyS]);
-					const float rightInput = float(_input->keys[frost::KeyD]) - float(_input->keys[frost::KeyA]);
-					const float upInput = float(_input->keys[frost::KeyE]) - float(_input->keys[frost::KeyQ]);
-
-					const frost::Vec3 movement = frost::add(
-						frost::add(frost::mul(forward, forwardInput), frost::mul(right, rightInput)),
-						{ 0.0f, upInput, 0.0f });
-
-					if (0.0f < frost::dot(movement, movement))
-					{
-						const bool boosted = _input->keys[frost::KeyLeftShift] || _input->keys[frost::KeyRightShift];
-						const float speed = _controller.speed * (boosted ? _controller.boost : 1.0f);
-
-						_camera.position = frost::add(_camera.position, frost::mul(frost::normalize(movement), speed * delta));
-					}
-				});
-		}
-	};
-
-} // namespace
-
-namespace
-{
-	struct SceneResource
-	{
-		// Assets
-		frost::MeshHandle mesh;
-		float hoursPerSecond = 0.5f;
-
-		// Instances
-		enum Enum
-		{
-			Player,
-			Floor,
-			Sun,
-
-			Count
-		};
-		frost::Entity instances[SceneResource::Count];
-	};
-
-	struct SceneSystem
-	{
-		static void startup(frost::World& _world, frost::ResMutT<frost::ActiveCameraResource> _activeCamera, frost::ResMutT<SceneResource> _scene)
-		{
-			// Load and create assets
-			frost::Error err;
-			frost::FileReader reader;
-			const frost::Memory* mem = NULL;
-			if (frost::open(&reader, "cube.mesh", &err) )
-			{
-				const int64_t size = frost::getSize(&reader);
-				if (0 < size && INT32_MAX >= size)
-				{
-					mem = frost::allocMemory(_world.getAllocator(), uint32_t(size) );
-					if (NULL != mem)
-					{
-						frost::read(&reader, mem->data, int32_t(size), &err);
-					}
-				}
-				frost::close(&reader);
-			}
-
-			_scene->mesh = frost::createMesh(mem, &err);
-			if (!frost::isValid(_scene->mesh) )
-			{
-				const frost::StringLiteral message = err.getMessage();
-				return;
-			}
-
-			// Create floor
-			frost::TransformComponent transform;
-			transform.scale = { 100.0f, 1.0f, 100.0f };
-			_scene->instances[SceneResource::Floor] = _world.spawn(frost::MeshComponent{ _scene->mesh }, transform).id();
-
-			// One component controls the visible atmosphere and its sunlight.
-			_scene->instances[SceneResource::Sun] = _world.spawn(frost::SkyComponent{}).id();
-
-			// Create flying camera entity.
-			frost::CameraComponent camera;
-			camera.position = { 0.0f, 3.0f, -5.0f };
-			_scene->instances[SceneResource::Player] = _world.spawn(camera, ExampleCameraComponent{}).id();
-			_activeCamera->entity = _scene->instances[SceneResource::Player]; // Active camera entity TODO: Figure out a better way for this?
-		}
-
-		static void update(frost::ResT<frost::TimeResource> _time, frost::ResT<SceneResource> _scene, frost::QueryT<frost::SkyComponent&> _skies)
-		{
-			const float delta = float(frost::min(_time->delta, 0.1));
-			_skies.get(_scene->instances[SceneResource::Sun], [&](frost::SkyComponent& _sky)
-				{
-					_sky.time = frost::wrap(_sky.time + delta * _scene->hoursPerSecond, 24.0f);
-				});
-		}
-
-		static void shutdown(frost::World& _world, frost::ResMutT<SceneResource> _scene)
-		{
-			for (uint32_t ii = 0; ii < SceneResource::Count; ++ii)
-			{
-				_world.despawn(_scene->instances[ii]);
-			}
-
-			frost::release(_scene->mesh);
-		}
-	};
-
-} // namespace
-
-namespace
-{
+	/// Example plugin.
+	///
 	struct ExamplePlugin : frost::PluginI
 	{
 		virtual void build(frost::App& _app) override
@@ -196,8 +22,7 @@ namespace
 			_app.insertResource<SceneResource>(SceneResource{});
 
 			_app.addSystems(frost::EcsStage::PostStartup, SceneSystem::startup);
-			_app.addSystems(frost::EcsStage::Update, FlyCameraSystem::update);
-			_app.addSystems(frost::EcsStage::Update, SceneSystem::update);
+			_app.addSystems(frost::EcsStage::Update, CameraSystem::update);
 			_app.addSystems(frost::EcsStage::Shutdown, SceneSystem::shutdown);
 		}
 	};

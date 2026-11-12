@@ -124,6 +124,8 @@ namespace frost
 
 		_app.addSystems(EcsStage::PreUpdate, BgfxSystem::preUpdate);
 
+		_app.addSystems(EcsStage::PostUpdate, SkySystem::advanceTime);
+
 		_app.addSystems(EcsStage::PostUpdate, GBufferSystem::update);
 		_app.addSystems(EcsStage::PostUpdate, LightSystem::update);
 		_app.addSystems(EcsStage::PostUpdate, SkySystem::update);
