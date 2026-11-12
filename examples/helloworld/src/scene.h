@@ -93,7 +93,7 @@ namespace
 			{
 				frost::SkyComponent sky;
 				sky.hps = 0.5f;
-				_scene->instances[SceneResource::Sky] = _world.spawn(sky).id();
+				_scene->instances[SceneResource::Sky] = _world.spawn(sky, frost::DirectionalLightComponent{}).id();
 			}
 
 			// Create flying camera entity.
@@ -105,6 +105,16 @@ namespace
 
 			// Active camera on player entity TODO: Figure out a better way for this?
 			_activeCamera->entity = _scene->instances[SceneResource::Player];
+		}
+
+		// This scene chooses to use the sky's sun as a directional light.
+		static void updateSun(frost::QueryT<const frost::SkyComponent&, frost::DirectionalLightComponent&> _suns)
+		{
+			_suns.each([](const frost::SkyComponent& _sky, frost::DirectionalLightComponent& _light)
+				{
+					_light.direction = _sky.sunDirection;
+					_light.color = _sky.sunColor;
+				});
 		}
 
 		static void shutdown(frost::World& _world, frost::ResMutT<SceneResource> _scene)

@@ -46,8 +46,17 @@ namespace frost
 		Vec3 scale = { 1.0f, 1.0f, 1.0f };
 	};
 
-	/// Procedural Perez atmosphere and its directional sunlight. Use one SkyComponent for
-	/// the active view. SkySystem advances time at the configured hps.
+	/// Directional illumination, independent of any sky.
+	struct DirectionalLightComponent
+	{
+		Vec3 direction = { 0.0f, 1.0f, 0.0f }; //!< World direction toward the light; must be finite and nonzero.
+		Vec3 color = { 1.0f, 1.0f, 1.0f };      //!< Linear RGB illumination, clamped nonnegative.
+		float intensity = 1.0f;                //!< Nonnegative multiplier; zero disables the light.
+	};
+
+	/// Procedural Perez atmosphere. Use one SkyComponent for the active view.
+	/// PreUpdate advances time and calculates sunlight; this component does not create a light.
+	/// Application Update systems can copy sunDirection and sunColor into a DirectionalLightComponent.
 	struct SkyComponent
 	{
 		enum Month
@@ -67,6 +76,12 @@ namespace frost
 		float sunIntensity = 1.0f;  //!< Multiplier for direct sunlight and sun disk.
 		float exposure = 0.1f;      //!< Linear exposure for sky and surface sunlight.
 		bool preventBanding = true;
+
+		/// Calculated during PreUpdate. Unit world direction toward the sun.
+		Vec3 sunDirection = { 0.0f, 1.0f, 0.0f };
+
+		/// Calculated linear RGB sunlight, including sunTint, sunIntensity and exposure.
+		Vec3 sunColor = { 0.0f, 0.0f, 0.0f };
 	};
 
 	/// Create a mesh from a cooked asset after graphics startup. Always consumes

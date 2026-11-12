@@ -870,158 +870,6 @@ namespace frost
 
 } // namespace frost
 
-// Sky model
-namespace frost
-{
-	// Perez coefficients, luminance tables, solar orbit, and grid adapted from
-	// bgfx/examples/36-sky. Copyright 2017 Stanislav Pidhorskyi.
-	// License: https://github.com/bkaradzic/bgfx/blob/master/LICENSE
-	struct SkyLuminance
-	{
-		float hour;
-		Vec3 xyz;
-	};
-
-	static const SkyLuminance s_sunLuminance[] =
-	{
-		{  5.0f, {  0.000000f,  0.000000f,  0.000000f } },
-		{  7.0f, { 12.703322f, 12.989393f,  9.100411f } },
-		{  8.0f, { 13.202644f, 13.597814f, 11.524929f } },
-		{  9.0f, { 13.192974f, 13.597458f, 12.264488f } },
-		{ 10.0f, { 13.132943f, 13.535914f, 12.560032f } },
-		{ 11.0f, { 13.088722f, 13.489535f, 12.692996f } },
-		{ 12.0f, { 13.067827f, 13.467483f, 12.745179f } },
-		{ 13.0f, { 13.069653f, 13.469413f, 12.740822f } },
-		{ 14.0f, { 13.094319f, 13.495428f, 12.678066f } },
-		{ 15.0f, { 13.142133f, 13.545483f, 12.526785f } },
-		{ 16.0f, { 13.201734f, 13.606017f, 12.188001f } },
-		{ 17.0f, { 13.182774f, 13.572725f, 11.311157f } },
-		{ 18.0f, { 12.448635f, 12.672520f,  8.267771f } },
-		{ 20.0f, {  0.000000f,  0.000000f,  0.000000f } },
-	};
-
-	static const SkyLuminance s_skyLuminance[] =
-	{
-		{  0.0f, { 0.308f,    0.308f,    0.411f    } },
-		{  1.0f, { 0.308f,    0.308f,    0.410f    } },
-		{  2.0f, { 0.301f,    0.301f,    0.402f    } },
-		{  3.0f, { 0.287f,    0.287f,    0.382f    } },
-		{  4.0f, { 0.258f,    0.258f,    0.344f    } },
-		{  5.0f, { 0.258f,    0.258f,    0.344f    } },
-		{  7.0f, { 0.962851f, 1.000000f, 1.747835f } },
-		{  8.0f, { 0.967787f, 1.000000f, 1.776762f } },
-		{  9.0f, { 0.970173f, 1.000000f, 1.788413f } },
-		{ 10.0f, { 0.971431f, 1.000000f, 1.794102f } },
-		{ 11.0f, { 0.972099f, 1.000000f, 1.797096f } },
-		{ 12.0f, { 0.972385f, 1.000000f, 1.798389f } },
-		{ 13.0f, { 0.972361f, 1.000000f, 1.798278f } },
-		{ 14.0f, { 0.972020f, 1.000000f, 1.796740f } },
-		{ 15.0f, { 0.971275f, 1.000000f, 1.793407f } },
-		{ 16.0f, { 0.969885f, 1.000000f, 1.787078f } },
-		{ 17.0f, { 0.967216f, 1.000000f, 1.773758f } },
-		{ 18.0f, { 0.961668f, 1.000000f, 1.739891f } },
-		{ 20.0f, { 0.264f,    0.264f,    0.352f    } },
-		{ 21.0f, { 0.264f,    0.264f,    0.352f    } },
-		{ 22.0f, { 0.290f,    0.290f,    0.386f    } },
-		{ 23.0f, { 0.303f,    0.303f,    0.404f    } },
-		{ 24.0f, { 0.308f, 0.308f, 0.411f } },
-	};
-
-	static constexpr Vec3 s_perezBase[] =
-	{
-		{ -0.2592f, -0.2608f, -1.4630f },
-		{  0.0008f,  0.0092f,  0.4275f },
-		{  0.2125f,  0.2102f,  5.3251f },
-		{ -0.8989f, -1.6537f, -2.5771f },
-		{  0.0452f,  0.0529f,  0.3703f },
-	};
-
-	static constexpr Vec3 s_perezTurbidity[] =
-	{
-		{ -0.0193f, -0.0167f,  0.1787f },
-		{ -0.0665f, -0.0950f, -0.3554f },
-		{ -0.0004f, -0.0079f, -0.0227f },
-		{ -0.0641f, -0.0441f,  0.1206f },
-		{ -0.0033f, -0.0109f, -0.0670f },
-	};
-
-
-	template<uint32_t Count>
-	static Vec3 sampleSkyLuminance(const SkyLuminance (&_table)[Count], float _hour)
-	{
-		if (_hour <= _table[0].hour)
-		{
-			return _table[0].xyz;
-		}
-		for (uint32_t ii = 1; ii < Count; ++ii)
-		{
-			if (_hour <= _table[ii].hour)
-			{
-				const SkyLuminance& a = _table[ii - 1];
-				const SkyLuminance& b = _table[ii];
-				return lerp(a.xyz, b.xyz, (_hour - a.hour) / (b.hour - a.hour));
-			}
-		}
-		return _table[Count - 1].xyz;
-	}
-
-	struct SunState
-	{
-		float direction[4];
-		float luminance[4];
-		float skyLuminanceXYZ[4];
-		float tint[4];
-		float parameters[4];
-		float perez[20];
-	};
-
-	static void evaluateSun(const SkyComponent& _sky, SunState& _sun)
-	{
-		const float hour = isFinite(_sky.time) ? wrap(_sky.time, 24.0f) : 12.0f;
-		const float latitude = toRad(clamp(_sky.latitude, -90.0f, 90.0f));
-		const float day = 30.0f * float(clamp(int32_t(_sky.month), 0, 11)) + 15.0f;
-		const float lambda = toRad(280.46f + 0.9856474f * day);
-		const float delta = asin(sin(toRad(23.4f)) * sin(lambda));
-		const float hh = (hour - 12.0f) * kPi / 12.0f;
-		const float azimuth = atan2(sin(hh), cos(hh) * sin(latitude) - tan(delta) * cos(latitude));
-		const float altitude = asin(clamp(sin(latitude) * sin(delta)
-			+ cos(latitude) * cos(delta) * cos(hh), -1.0f, 1.0f));
-		// +X is north and +Y is up, matching example 36.
-		const Vec3 direction = { cos(azimuth) * cos(altitude), sin(altitude), sin(azimuth) * cos(altitude) };
-		store(_sun.direction, direction);
-		_sun.direction[3] = 0.0f;
-
-		const Vec3 xyz = sampleSkyLuminance(s_sunLuminance, hour);
-		const Vec3 rgb = {
-			max(0.0f,  3.240479f * xyz.x - 1.537150f * xyz.y - 0.498530f * xyz.z),
-			max(0.0f, -0.969256f * xyz.x + 1.875991f * xyz.y + 0.041556f * xyz.z),
-			max(0.0f,  0.055648f * xyz.x - 0.204043f * xyz.y + 1.057311f * xyz.z),
-		};
-		const Vec3 tint = {
-			max(0.0f, _sky.sunTint.x), max(0.0f, _sky.sunTint.y), max(0.0f, _sky.sunTint.z)
-		};
-		const float intensity = max(0.0f, _sky.sunIntensity);
-		const float exposure = max(0.0f, _sky.exposure);
-		store(_sun.luminance, mul(mul(rgb, tint), intensity * exposure));
-		_sun.luminance[3] = 0.0f;
-		store(_sun.skyLuminanceXYZ, sampleSkyLuminance(s_skyLuminance, hour));
-		_sun.skyLuminanceXYZ[3] = 0.0f;
-		store(_sun.tint, mul(tint, intensity));
-		_sun.tint[3] = 0.0f;
-		_sun.parameters[0] = max(0.0001f, _sky.sunSize);
-		_sun.parameters[1] = max(0.0001f, _sky.sunBloom);
-		_sun.parameters[2] = exposure;
-		_sun.parameters[3] = hour;
-		const float turbidity = clamp(_sky.turbidity, 1.9f, 10.0f);
-		for (uint32_t ii = 0; ii < 5; ++ii)
-		{
-			store(&_sun.perez[ii * 4], mad(s_perezTurbidity[ii], turbidity, s_perezBase[ii]));
-			_sun.perez[ii * 4 + 3] = 0.0f;
-		}
-	}
-
-} // namespace frost
-
 // Light pass
 namespace frost
 {
@@ -1099,7 +947,7 @@ namespace frost
 			return true;
 		}
 
-		static void update(ResT<GBufferResource> _gbuffer, QueryT<const SkyComponent&> _skies, ResMutT<LightResource> _light)
+		static void update(ResT<GBufferResource> _gbuffer, QueryT<const DirectionalLightComponent&> _lights, ResMutT<LightResource> _light)
 		{
 			_light->active = false;
 			if (!_light->ready || !_gbuffer->active)
@@ -1124,16 +972,31 @@ namespace frost
 			bgfx::setViewTransform(kRenderPassLight, NULL, projection);
 			bgfx::touch(kRenderPassLight);
 			_light->active = true;
-			SunState sun = {};
-			if (!_skies.single([&](const SkyComponent& _sky) { evaluateSun(_sky, sun); }) || !screenSpaceTriangle(_light->layout))
-			{
-				return;
-			}
-			bgfx::setUniform(_light->u_sunDirection, sun.direction);
-			bgfx::setUniform(_light->u_sunLuminance, sun.luminance);
-			bgfx::setTexture(0, _light->s_normal, _gbuffer->textures[1]);
-			bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
-			bgfx::submit(kRenderPassLight, _light->program);
+			_lights.each([&](const DirectionalLightComponent& _component)
+				{
+					const float lengthSq = dot(_component.direction, _component.direction);
+					if (!isFinite(lengthSq) || 0.0f >= lengthSq
+					|| !isFinite(_component.intensity) || 0.0f >= _component.intensity)
+					{
+						return;
+					}
+					float direction[4] = {};
+					store(direction, mul(_component.direction, rsqrt(lengthSq)));
+					const Vec3 color = {
+						max(0.0f, _component.color.x), max(0.0f, _component.color.y), max(0.0f, _component.color.z)
+					};
+					float luminance[4] = {};
+					store(luminance, mul(color, _component.intensity));
+					if (!screenSpaceTriangle(_light->layout))
+					{
+						return;
+					}
+					bgfx::setUniform(_light->u_sunDirection, direction);
+					bgfx::setUniform(_light->u_sunLuminance, luminance);
+					bgfx::setTexture(0, _light->s_normal, _gbuffer->textures[1]);
+					bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_BLEND_ADD);
+					bgfx::submit(kRenderPassLight, _light->program);
+				});
 		}
 
 		static void shutdown(ResMutT<LightResource> _light)
@@ -1147,9 +1010,100 @@ namespace frost
 	};
 } // namespace frost
 
-// Sky pass
+// Sky
 namespace frost
 {
+	// Perez coefficients, luminance tables, solar orbit, and grid adapted from
+	// bgfx/examples/36-sky. Copyright 2017 Stanislav Pidhorskyi.
+	// License: https://github.com/bkaradzic/bgfx/blob/master/LICENSE
+	struct SkyLuminance
+	{
+		float hour;
+		Vec3 xyz;
+	};
+
+	static const SkyLuminance s_sunLuminance[] =
+	{
+		{  5.0f, {  0.000000f,  0.000000f,  0.000000f } },
+		{  7.0f, { 12.703322f, 12.989393f,  9.100411f } },
+		{  8.0f, { 13.202644f, 13.597814f, 11.524929f } },
+		{  9.0f, { 13.192974f, 13.597458f, 12.264488f } },
+		{ 10.0f, { 13.132943f, 13.535914f, 12.560032f } },
+		{ 11.0f, { 13.088722f, 13.489535f, 12.692996f } },
+		{ 12.0f, { 13.067827f, 13.467483f, 12.745179f } },
+		{ 13.0f, { 13.069653f, 13.469413f, 12.740822f } },
+		{ 14.0f, { 13.094319f, 13.495428f, 12.678066f } },
+		{ 15.0f, { 13.142133f, 13.545483f, 12.526785f } },
+		{ 16.0f, { 13.201734f, 13.606017f, 12.188001f } },
+		{ 17.0f, { 13.182774f, 13.572725f, 11.311157f } },
+		{ 18.0f, { 12.448635f, 12.672520f,  8.267771f } },
+		{ 20.0f, {  0.000000f,  0.000000f,  0.000000f } },
+	};
+
+	static const SkyLuminance s_skyLuminance[] =
+	{
+		{  0.0f, { 0.308f,    0.308f,    0.411f    } },
+		{  1.0f, { 0.308f,    0.308f,    0.410f    } },
+		{  2.0f, { 0.301f,    0.301f,    0.402f    } },
+		{  3.0f, { 0.287f,    0.287f,    0.382f    } },
+		{  4.0f, { 0.258f,    0.258f,    0.344f    } },
+		{  5.0f, { 0.258f,    0.258f,    0.344f    } },
+		{  7.0f, { 0.962851f, 1.000000f, 1.747835f } },
+		{  8.0f, { 0.967787f, 1.000000f, 1.776762f } },
+		{  9.0f, { 0.970173f, 1.000000f, 1.788413f } },
+		{ 10.0f, { 0.971431f, 1.000000f, 1.794102f } },
+		{ 11.0f, { 0.972099f, 1.000000f, 1.797096f } },
+		{ 12.0f, { 0.972385f, 1.000000f, 1.798389f } },
+		{ 13.0f, { 0.972361f, 1.000000f, 1.798278f } },
+		{ 14.0f, { 0.972020f, 1.000000f, 1.796740f } },
+		{ 15.0f, { 0.971275f, 1.000000f, 1.793407f } },
+		{ 16.0f, { 0.969885f, 1.000000f, 1.787078f } },
+		{ 17.0f, { 0.967216f, 1.000000f, 1.773758f } },
+		{ 18.0f, { 0.961668f, 1.000000f, 1.739891f } },
+		{ 20.0f, { 0.264f,    0.264f,    0.352f    } },
+		{ 21.0f, { 0.264f,    0.264f,    0.352f    } },
+		{ 22.0f, { 0.290f,    0.290f,    0.386f    } },
+		{ 23.0f, { 0.303f,    0.303f,    0.404f    } },
+		{ 24.0f, { 0.308f, 0.308f, 0.411f } },
+	};
+
+	static constexpr Vec3 s_perezBase[] =
+	{
+		{ -0.2592f, -0.2608f, -1.4630f },
+		{  0.0008f,  0.0092f,  0.4275f },
+		{  0.2125f,  0.2102f,  5.3251f },
+		{ -0.8989f, -1.6537f, -2.5771f },
+		{  0.0452f,  0.0529f,  0.3703f },
+	};
+
+	static constexpr Vec3 s_perezTurbidity[] =
+	{
+		{ -0.0193f, -0.0167f,  0.1787f },
+		{ -0.0665f, -0.0950f, -0.3554f },
+		{ -0.0004f, -0.0079f, -0.0227f },
+		{ -0.0641f, -0.0441f,  0.1206f },
+		{ -0.0033f, -0.0109f, -0.0670f },
+	};
+
+	template<uint32_t Count>
+	static Vec3 sampleSkyLuminance(const SkyLuminance (&_table)[Count], float _hour)
+	{
+		if (_hour <= _table[0].hour)
+		{
+			return _table[0].xyz;
+		}
+		for (uint32_t ii = 1; ii < Count; ++ii)
+		{
+			if (_hour <= _table[ii].hour)
+			{
+				const SkyLuminance& a = _table[ii - 1];
+				const SkyLuminance& b = _table[ii];
+				return lerp(a.xyz, b.xyz, (_hour - a.hour) / (b.hour - a.hour));
+			}
+		}
+		return _table[Count - 1].xyz;
+	}
+
 	struct SkyResource
 	{
 		bgfx::ProgramHandle program = BGFX_INVALID_HANDLE;
@@ -1166,15 +1120,37 @@ namespace frost
 
 	struct SkySystem
 	{
-		static void advanceTime(ResT<TimeResource> _time, QueryT<SkyComponent&> _skies)
+		static void prepare(ResT<TimeResource> _time, QueryT<SkyComponent&> _skies)
 		{
-			const float delta = float(min(_time->delta, 0.1));
+			const float deltaTime = float(min(_time->delta, 0.1));
 			_skies.each([&](SkyComponent& _sky)
 				{
 					if (0.0f != _sky.hps)
 					{
-						_sky.time = wrap(_sky.time + delta * _sky.hps, 24.0f);
+						_sky.time = wrap(_sky.time + deltaTime * _sky.hps, 24.0f);
 					}
+					const float hour = isFinite(_sky.time) ? wrap(_sky.time, 24.0f) : 12.0f;
+					const float latitude = toRad(clamp(_sky.latitude, -90.0f, 90.0f));
+					const float day = 30.0f * float(clamp(int32_t(_sky.month), 0, 11)) + 15.0f;
+					const float lambda = toRad(280.46f + 0.9856474f * day);
+					const float delta = asin(sin(toRad(23.4f)) * sin(lambda));
+					const float hh = (hour - 12.0f) * kPi / 12.0f;
+					const float azimuth = atan2(sin(hh), cos(hh) * sin(latitude) - tan(delta) * cos(latitude));
+					const float altitude = asin(clamp(sin(latitude) * sin(delta)
+						+ cos(latitude) * cos(delta) * cos(hh), -1.0f, 1.0f));
+					// +X is north and +Y is up, matching example 36.
+					_sky.sunDirection = { cos(azimuth) * cos(altitude), sin(altitude), sin(azimuth) * cos(altitude) };
+
+					const Vec3 xyz = sampleSkyLuminance(s_sunLuminance, hour);
+					const Vec3 rgb = {
+						max(0.0f,  3.240479f * xyz.x - 1.537150f * xyz.y - 0.498530f * xyz.z),
+						max(0.0f, -0.969256f * xyz.x + 1.875991f * xyz.y + 0.041556f * xyz.z),
+						max(0.0f,  0.055648f * xyz.x - 0.204043f * xyz.y + 1.057311f * xyz.z),
+					};
+					const Vec3 tint = {
+						max(0.0f, _sky.sunTint.x), max(0.0f, _sky.sunTint.y), max(0.0f, _sky.sunTint.z)
+					};
+					_sky.sunColor = mul(mul(rgb, tint), max(0.0f, _sky.sunIntensity) * max(0.0f, _sky.exposure));
 				});
 		}
 
@@ -1232,15 +1208,10 @@ namespace frost
 			const uint32_t skyCount = _skies.getCount();
 			if (skyCount != _sky->skyCount)
 			{
-				if (skyCount > 1) debugPrintf("The active view requires at most one Sky component; sunlight and sky are disabled.\n");
+				if (skyCount > 1) debugPrintf("The active view requires at most one Sky component; the sky background is disabled.\n");
 				_sky->skyCount = skyCount;
 			}
-			if (!_sky->ready || !_light->active)
-			{
-				return;
-			}
-			SunState sun = {};
-			if (!_skies.single([&](const SkyComponent& _component) { evaluateSun(_component, sun); }))
+			if (!_sky->ready || !_light->active || 1 != skyCount)
 			{
 				return;
 			}
@@ -1253,15 +1224,38 @@ namespace frost
 			bgfx::setViewFrameBuffer(kRenderPassSky, _light->frameBuffer);
 			bgfx::setViewClear(kRenderPassSky, BGFX_CLEAR_NONE);
 			bgfx::setViewTransform(kRenderPassSky, view, proj);
-			bgfx::setUniform(_sky->u_sunDirection, sun.direction);
-			bgfx::setUniform(_sky->u_skyLuminanceXYZ, sun.skyLuminanceXYZ);
-			bgfx::setUniform(_sky->u_sunTint, sun.tint);
-			bgfx::setUniform(_sky->u_parameters, sun.parameters);
-			bgfx::setUniform(_sky->u_perezCoeff, sun.perez, 5);
-			bgfx::setVertexBuffer(0, _sky->vertices);
-			bgfx::setIndexBuffer(_sky->indices);
-			bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_DEPTH_TEST_EQUAL);
-			bgfx::submit(kRenderPassSky, _sky->program);
+			_skies.single([&](const SkyComponent& _component)
+				{
+					const float hour = isFinite(_component.time) ? wrap(_component.time, 24.0f) : 12.0f;
+					float direction[4] = {};
+					store(direction, _component.sunDirection);
+					float luminance[4] = {};
+					store(luminance, sampleSkyLuminance(s_skyLuminance, hour));
+					const Vec3 tint = {
+						max(0.0f, _component.sunTint.x), max(0.0f, _component.sunTint.y), max(0.0f, _component.sunTint.z)
+					};
+					float sunTint[4] = {};
+					store(sunTint, mul(tint, max(0.0f, _component.sunIntensity)));
+					const float parameters[4] = {
+						max(0.0001f, _component.sunSize), max(0.0001f, _component.sunBloom),
+						max(0.0f, _component.exposure), hour
+					};
+					float perez[20] = {};
+					const float turbidity = clamp(_component.turbidity, 1.9f, 10.0f);
+					for (uint32_t ii = 0; ii < 5; ++ii)
+					{
+						store(&perez[ii * 4], mad(s_perezTurbidity[ii], turbidity, s_perezBase[ii]));
+					}
+					bgfx::setUniform(_sky->u_sunDirection, direction);
+					bgfx::setUniform(_sky->u_skyLuminanceXYZ, luminance);
+					bgfx::setUniform(_sky->u_sunTint, sunTint);
+					bgfx::setUniform(_sky->u_parameters, parameters);
+					bgfx::setUniform(_sky->u_perezCoeff, perez, 5);
+					bgfx::setVertexBuffer(0, _sky->vertices);
+					bgfx::setIndexBuffer(_sky->indices);
+					bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_DEPTH_TEST_EQUAL);
+					bgfx::submit(kRenderPassSky, _sky->program);
+				});
 		}
 
 		static void shutdown(ResMutT<SkyResource> _sky)
