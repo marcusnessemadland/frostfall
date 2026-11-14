@@ -39,7 +39,7 @@ namespace frost
 		uint32_t generation; //!< Entity generation.
 	};
 
-	/// Startup and frame schedules, followed by Shutdown when the application stops.
+	/// Startup and frame schedules, followed by three ordered shutdown phases.
 	/// Fixed schedules use TimeResource::fixedDelta.
 	///
 	struct EcsStage
@@ -60,7 +60,9 @@ namespace frost
 			Update,
 			PostUpdate,
 			Last,
-			Shutdown, //!< Runs once before plugins and resources are destroyed.
+			PreShutdown,  //!< Release scene assets before engine services stop.
+			Shutdown,     //!< Stop engine services, including rendering.
+			PostShutdown, //!< Release platform services after engine services stop.
 
 			Count
 		};

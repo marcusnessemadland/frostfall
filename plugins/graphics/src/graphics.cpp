@@ -5,6 +5,7 @@
 
 #include <graphics.h>
 #include <device.h>
+#include <frost/os.h>
 
 #include "graphics_p.h"
 
@@ -16,49 +17,97 @@ namespace frost
 			? bgfx::NativeWindowHandleType::Wayland : bgfx::NativeWindowHandleType::Default;
 	}
 
-	struct BgfxSystem
+	static bgfx::RendererType::Enum getBgfxRendererType(RendererType::Enum _type)
 	{
-		static void startup(World& _world, ResT<GraphicsResource> _graphics, ResT<DisplayResource> _display)
+		return static_cast<bgfx::RendererType::Enum>(_type);
+	}
+
+	struct RendererSystem
+	{
+		static void startup(World& _world, ResT<GraphicsResource> _graphics, ResT<DisplayResource> _display,
+			ResMutT<GBufferResource> _gbuffer, ResMutT<LightResource> _light,
+			ResMutT<SkyResource> _sky, ResMutT<CombineResource> _combine)
 		{
 			bgfx::Init init;
-			init.type = bgfx::RendererType::Count; // auto
-			init.vendorId = BGFX_PCI_ID_NONE; // auto
+			init.type = getBgfxRendererType(_graphics->type);
+			init.vendorId = BGFX_PCI_ID_NONE; // Autoselect adapter.
 			init.swapChain.nwh = _display->nativeWindow;
 			init.swapChain.ndt = _display->nativeDisplay;
 			init.platformData.type = getBgfxWindowHandleType(_display->nativeWindowHandleType);
-			init.swapChain.width  = _graphics->width;
-			init.swapChain.height = _graphics->height;
-			init.reset  = BGFX_RESET_NONE;
+			init.swapChain.width = _display->width;
+			init.swapChain.height = _display->height;
+			init.reset = BGFX_RESET_NONE; // TODO: Expose vsync in GraphicsResource.
 			if (!bgfx::init(init))
 			{
-				debugPrintf("Failed to initialize bgfx context.\n");
-				return;
+				debugPrintf("Failed to initialize bgfx.\n");
+				frost::exit(kExitFailure, false);
 			}
 			MeshSystem::startup(_world, _graphics);
+			GBufferSystem::startup(*_gbuffer);
+			LightSystem::startup(*_light);
+			SkySystem::startup(*_sky);
+			CombineSystem::startup(*_combine);
 		}
 
-		static void preUpdate(ResT<DisplayResource> _display)
+		static void update(ResT<DisplayResource> _display, ResT<ActiveCameraResource> _activeCamera,
+			QueryT<const CameraComponent&> _cameras,
+			QueryT<const MeshComponent&, OptionalT<const TransformComponent>> _meshes,
+			QueryT<const DirectionalLightComponent&> _lights, QueryT<const SkyComponent&> _skies,
+			ResMutT<GBufferResource> _gbuffer, ResMutT<LightResource> _light,
+			ResT<SkyResource> _sky, ResT<CombineResource> _combine)
 		{
-			// Reset if needed
+			if (0 == _display->width || 0 == _display->height)
+			{
+				return;
+			}
 			const bgfx::Stats* stats = bgfx::getStats();
 			if (stats->width != _display->width || stats->height != _display->height)
 			{
 				bgfx::SwapChain swapChain;
-				swapChain.width  = _display->width;
+				swapChain.width = _display->width;
 				swapChain.height = _display->height;
 				bgfx::reset(BGFX_RESET_NONE, &swapChain);
 			}
+
+			// Clear presentation even when there is no selected camera.
+			bgfx::setViewRect(kRenderPassCombine, 0, 0, uint16_t(_display->width), uint16_t(_display->height));
+			bgfx::setViewFrameBuffer(kRenderPassCombine, BGFX_INVALID_HANDLE);
+			bgfx::setViewClear(kRenderPassCombine, BGFX_CLEAR_COLOR, UINT32_C(0x000000ff));
+			bgfx::touch(kRenderPassCombine);
+
+			RenderFrame frame;
+			frame.width = uint16_t(_display->width);
+			frame.height = uint16_t(_display->height);
+			if (!getCameraMatrices(*_activeCamera, _cameras, frame.width, frame.height, frame.view, frame.projection))
+			{
+				return;
+			}
+			mtxOrtho(frame.screenProjection, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 100.0f,
+				0.0f, bgfx::getCaps()->homogeneousDepth);
+			if (_gbuffer->width != frame.width || _gbuffer->height != frame.height)
+			{
+				GBufferSystem::resize(*_gbuffer, frame.width, frame.height);
+				LightSystem::resize(*_light, *_gbuffer);
+			}
+
+			GBufferSystem::update(frame, _meshes, *_gbuffer);
+			LightSystem::update(frame, *_gbuffer, _lights, *_light);
+			SkySystem::update(frame, *_light, _skies, *_sky);
+			CombineSystem::update(frame, *_gbuffer, *_light, _skies, *_combine);
 		}
 
-		static void postUpdate()
+		static void endFrame()
 		{
-			// Advance to next frame. Rendering thread will be kicked to
-			// process submitted rendering primitives.
 			bgfx::frame();
 		}
 
-		static void shutdown()
+		static void shutdown(ResMutT<GBufferResource> _gbuffer, ResMutT<LightResource> _light,
+			ResMutT<SkyResource> _sky, ResMutT<CombineResource> _combine)
 		{
+			CombineSystem::shutdown(*_combine);
+			SkySystem::shutdown(*_sky);
+			LightSystem::shutdown(*_light);
+			GBufferSystem::shutdown(*_gbuffer);
 			MeshSystem::shutdown();
 			bgfx::shutdown();
 		}
@@ -66,6 +115,7 @@ namespace frost
 
 } // namespace frost
 
+// TODO: should this be here? cant we just have this in graphics_p.h?
 namespace frost
 {
 	MeshHandle createMesh(const Memory* _mem, Error* _err)
@@ -80,10 +130,7 @@ namespace frost
 	{
 		MeshRef* mesh = getMeshRef(_handle);
 		FROST_ASSERT(NULL != mesh && UINT32_MAX != mesh->refCount, "Cannot retain an invalid or overflowing mesh reference.");
-		if (NULL != mesh && UINT32_MAX != mesh->refCount)
-		{
-			++mesh->refCount;
-		}
+		++mesh->refCount;
 	}
 
 	void release(MeshHandle _handle)
@@ -94,7 +141,7 @@ namespace frost
 		}
 		MeshRef* mesh = getMeshRef(_handle);
 		FROST_ASSERT(NULL != mesh && 0 != mesh->refCount, "Cannot release an invalid mesh reference.");
-		if (NULL != mesh && 0 != mesh->refCount && 0 == --mesh->refCount)
+		if (0 == --mesh->refCount)
 		{
 			destroyMesh(*mesh);
 			s_meshContext->handles->free(_handle.idx);
@@ -114,31 +161,12 @@ namespace frost
 		_app.insertResource<SkyResource>();
 		_app.insertResource<CombineResource>();
 
-		// Systems
-		_app.addSystems(EcsStage::Startup, BgfxSystem::startup);
-
-		_app.addSystems(EcsStage::Startup, GBufferSystem::startup);
-		_app.addSystems(EcsStage::Startup, LightSystem::startup);
-		_app.addSystems(EcsStage::Startup, SkySystem::startup);
-		_app.addSystems(EcsStage::Startup, CombineSystem::startup);
-
-		_app.addSystems(EcsStage::PreUpdate, BgfxSystem::preUpdate);
-
+		// Graphics owns its pass order; scene systems run before this renderer entry point.
+		_app.addSystems(EcsStage::Startup, RendererSystem::startup);
 		_app.addSystems(EcsStage::PreUpdate, SkySystem::prepare);
-
-		_app.addSystems(EcsStage::PostUpdate, GBufferSystem::update);
-		_app.addSystems(EcsStage::PostUpdate, LightSystem::update);
-		_app.addSystems(EcsStage::PostUpdate, SkySystem::update);
-		_app.addSystems(EcsStage::PostUpdate, CombineSystem::update);
-
-		_app.addSystems(EcsStage::Last, BgfxSystem::postUpdate); // Swaps buffers
-
-		_app.addSystems(EcsStage::Shutdown, CombineSystem::shutdown);
-		_app.addSystems(EcsStage::Shutdown, SkySystem::shutdown);
-		_app.addSystems(EcsStage::Shutdown, LightSystem::shutdown);
-		_app.addSystems(EcsStage::Shutdown, GBufferSystem::shutdown);
-
-		_app.addSystems(EcsStage::Shutdown, BgfxSystem::shutdown);
+		_app.addSystems(EcsStage::PostUpdate, RendererSystem::update);
+		_app.addSystems(EcsStage::Last, RendererSystem::endFrame);
+		_app.addSystems(EcsStage::Shutdown, RendererSystem::shutdown);
 	}
 
 } // namespace frost

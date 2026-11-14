@@ -405,7 +405,7 @@ namespace frost
 	/// Creates the window and registers device/input resources and systems.
 	///
 	/// Adds DisplayResource and InputResource. Startup creates the window, PreUpdate pumps
-	/// events, and Shutdown destroys the window and releases video state.
+	/// events, and PostShutdown destroys the window and releases video state.
 	///
 	struct DevicePlugin : PluginI
 	{

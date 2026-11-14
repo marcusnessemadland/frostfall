@@ -1643,6 +1643,7 @@ namespace frost
 			, m_startupAttempted(false)
 			, m_shutdown(false)
 			, m_shutdownResult(EcsScheduleResult::Busy)
+			, m_shutdownStage(EcsStage::PreShutdown)
 			, m_updating(false)
 			, m_exit(false)
 		{
@@ -1696,6 +1697,7 @@ namespace frost
 		bool                      m_startupAttempted;
 		bool                      m_shutdown;
 		EcsScheduleResult::Enum    m_shutdownResult;
+		uint32_t                  m_shutdownStage;
 		bool                      m_updating;
 		bool                      m_exit;
 	};
@@ -1981,12 +1983,21 @@ namespace frost
 		self->m_exit = true;
 		// Mark before invoking systems to prevent recursive shutdown.
 		self->m_shutdown = true;
-		self->m_shutdownResult = self->m_startupAttempted
-			? getSchedule(EcsStage::Shutdown).run(self->m_world)
-			: EcsScheduleResult::Success;
+		self->m_shutdownResult = EcsScheduleResult::Success;
+		if (self->m_startupAttempted)
+		{
+			for (; self->m_shutdownStage <= EcsStage::PostShutdown; ++self->m_shutdownStage)
+			{
+				self->m_shutdownResult = getSchedule(EcsStage::Enum(self->m_shutdownStage)).run(self->m_world);
+				if (EcsScheduleResult::Success != self->m_shutdownResult)
+				{
+					break;
+				}
+			}
+		}
 		if (EcsScheduleResult::Busy == self->m_shutdownResult)
 		{
-			// No systems ran. Allow retry after the world becomes writable.
+			// Retry the current phase without repeating completed teardown.
 			self->m_shutdown = false;
 		}
 		return EcsScheduleResult::Success == self->m_shutdownResult;

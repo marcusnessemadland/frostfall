@@ -5,6 +5,7 @@
 
 #include <device.h>
 #include <frost/timer.h>
+#include <frost/os.h>
 
 #include <SDL3/SDL.h>
 
@@ -333,14 +334,12 @@ namespace frost
 
 	struct SdlSystem
 	{
-		static void startup(ResT<SdlControlResource> _control, ResT<DeviceResource> _device, ResMutT<DisplayResource> _display, ResMutT<InputResource> _input)
+		static void startup(ResT<DeviceResource> _device, ResMutT<DisplayResource> _display)
 		{
 			if (!SDL_Init(SDL_INIT_VIDEO))
 			{
 				debugPrintf("Failed to initialize SDL: %s\n", SDL_GetError());
-				_control->app->exit();
-
-				return;
+				frost::exit(kExitFailure, false);
 			}
 
 			SDL_Window* window = SDL_CreateWindow(_device->title,
@@ -351,10 +350,7 @@ namespace frost
 			if (NULL == window)
 			{
 				debugPrintf("Failed to create SDL window: %s\n", SDL_GetError());
-				SDL_Quit();
-				_control->app->exit();
-
-				return;
+				frost::exit(kExitFailure, false);
 			}
 
 			_display->window = window;
@@ -365,14 +361,14 @@ namespace frost
 			if (NULL == _display->nativeWindow)
 			{
 				debugPrintf("SDL did not provide a native window handle: %s\n", SDL_GetError());
-				_control->app->exit();
+				frost::exit(kExitFailure, false);
 			}
 		}
 
 		static void update(ResT<SdlControlResource> _control, ResMutT<DisplayResource> _display, ResMutT<InputResource> _input)
 		{
 			SDL_Window* window = ((SDL_Window*)(_display->window));
-			const SDL_WindowID windowId = NULL == window ? 0 : SDL_GetWindowID(window);
+			const SDL_WindowID windowId = SDL_GetWindowID(window);
 
 			frost::memSet(_input->pressed, 0, sizeof(_input->pressed));
 			frost::memSet(_input->released, 0, sizeof(_input->released));
@@ -481,10 +477,7 @@ namespace frost
 		{
 			SDL_Window* window = ((SDL_Window*)(_display->window));
 
-			if (NULL != window)
-			{
-				SDL_DestroyWindow(window);
-			}
+			SDL_DestroyWindow(window);
 
 			_display->window = NULL;
 			_display->nativeWindow = NULL;
@@ -511,7 +504,7 @@ namespace frost
 		// Systems
 		_app.addSystems(EcsStage::Startup, SdlSystem::startup);
 		_app.addSystems(EcsStage::PreUpdate, SdlSystem::update);
-		_app.addSystems(EcsStage::Shutdown, SdlSystem::shutdown);
+		_app.addSystems(EcsStage::PostShutdown, SdlSystem::shutdown);
 
 		// Runner
 		_app.setRunner([](App& _app, void*)

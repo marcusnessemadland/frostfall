@@ -75,6 +75,7 @@ namespace
 				});
 		}
 	};
+
 }
 
 #endif // FROST_EXAMPLE_HELLOWORLD_CAMERA_H_HEADER_GUARD

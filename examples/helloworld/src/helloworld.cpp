@@ -23,8 +23,8 @@ namespace
 
 			_app.addSystems(frost::EcsStage::PostStartup, SceneSystem::startup);
 			_app.addSystems(frost::EcsStage::Update, CameraSystem::update);
-			_app.addSystems(frost::EcsStage::Update, SceneSystem::updateSun);
-			_app.addSystems(frost::EcsStage::Shutdown, SceneSystem::shutdown);
+			_app.addSystems(frost::EcsStage::Update, SceneSystem::update);
+			_app.addSystems(frost::EcsStage::PreShutdown, SceneSystem::shutdown);
 		}
 	};
 

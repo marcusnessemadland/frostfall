@@ -4,6 +4,7 @@
 // Engine
 #include <frost/ecs.h>
 #include <frost/file.h>
+#include <frost/os.h>
 
 // Engine Plugins
 #include <graphics.h>
@@ -56,7 +57,8 @@ namespace
 			if (!frost::isValid(_scene->mesh) )
 			{
 				const frost::StringLiteral message = err.getMessage();
-				return;
+				frost::debugPrintf("Unable to load cube.mesh: %.*s\n", message.getLength(), message.getCPtr());
+				frost::exit(frost::kExitFailure, false);
 			}
 
 			// Create floor
@@ -107,14 +109,14 @@ namespace
 			_activeCamera->entity = _scene->instances[SceneResource::Player];
 		}
 
-		// This scene chooses to use the sky's sun as a directional light.
-		static void updateSun(frost::QueryT<const frost::SkyComponent&, frost::DirectionalLightComponent&> _suns)
+		static void update(frost::QueryT<const frost::SkyComponent&, frost::DirectionalLightComponent&> _suns)
 		{
+			// This scene chooses to use the sky's sun as a directional light.
 			_suns.each([](const frost::SkyComponent& _sky, frost::DirectionalLightComponent& _light)
-				{
-					_light.direction = _sky.sunDirection;
-					_light.color = _sky.sunColor;
-				});
+			{
+				_light.direction = _sky.sunDirection;
+				_light.color = _sky.sunColor;
+			});
 		}
 
 		static void shutdown(frost::World& _world, frost::ResMutT<SceneResource> _scene)
@@ -127,6 +129,7 @@ namespace
 			frost::release(_scene->mesh);
 		}
 	};
+
 }
 
 #endif // FROST_EXAMPLE_HELLOWORLD_SCENE_H_HEADER_GUARD
