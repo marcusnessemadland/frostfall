@@ -181,7 +181,7 @@ namespace frost
 
 		/// Maximum number of simultaneously loaded meshes.
 		///
-		/// TODO: Define macros for static arrays
+		/// TODO: Define macros for static arrays and make them synced with BGFX_CONFIG_ macros
 		///
 		uint16_t maxMeshes = 1024;
 	};

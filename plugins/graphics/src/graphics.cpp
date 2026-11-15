@@ -13,12 +13,13 @@ namespace frost
 {
 	static bgfx::NativeWindowHandleType::Enum getBgfxWindowHandleType(NativeWindowHandleType::Enum _type)
 	{
-		return _type == NativeWindowHandleType::Wayland
-			? bgfx::NativeWindowHandleType::Wayland : bgfx::NativeWindowHandleType::Default;
+		// frost::NativeWindowHandleType is maintained a valid copy of bgfx::NativeWindowHandleType
+		return static_cast<bgfx::NativeWindowHandleType::Enum>(_type);
 	}
 
 	static bgfx::RendererType::Enum getBgfxRendererType(RendererType::Enum _type)
 	{
+		// frost::RendererType is maintained a valid copy of bgfx::RendererType
 		return static_cast<bgfx::RendererType::Enum>(_type);
 	}
 
