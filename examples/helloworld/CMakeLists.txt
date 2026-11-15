@@ -12,6 +12,7 @@ target_link_libraries(helloworld
         frost
         device   # Device plugin
         graphics # Graphics plugin
+        devmenu  # Devmenu plugin
 )
 
 target_include_directories(helloworld PRIVATE

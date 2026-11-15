@@ -8,6 +8,7 @@
 #include <frost/os.h>
 
 #include "graphics_p.h"
+#include "ui_p.h"
 
 namespace frost
 {
@@ -48,9 +49,10 @@ namespace frost
 			LightSystem::startup(*_light);
 			SkySystem::startup(*_sky);
 			CombineSystem::startup(*_combine);
+			UiSystem::startup(_world);
 		}
 
-		static void update(ResT<DisplayResource> _display, ResT<ActiveCameraResource> _activeCamera,
+		static void update(World& _world, ResT<DisplayResource> _display, ResT<ActiveCameraResource> _activeCamera,
 			QueryT<const CameraComponent&> _cameras,
 			QueryT<const MeshComponent&, OptionalT<const TransformComponent>> _meshes,
 			QueryT<const DirectionalLightComponent&> _lights, QueryT<const SkyComponent&> _skies,
@@ -79,22 +81,23 @@ namespace frost
 			RenderFrame frame;
 			frame.width = uint16_t(_display->width);
 			frame.height = uint16_t(_display->height);
-			if (!getCameraMatrices(*_activeCamera, _cameras, frame.width, frame.height, frame.view, frame.projection))
+			if (getCameraMatrices(*_activeCamera, _cameras, frame.width, frame.height, frame.view, frame.projection))
 			{
-				return;
-			}
-			mtxOrtho(frame.screenProjection, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 100.0f,
-				0.0f, bgfx::getCaps()->homogeneousDepth);
-			if (_gbuffer->width != frame.width || _gbuffer->height != frame.height)
-			{
-				GBufferSystem::resize(*_gbuffer, frame.width, frame.height);
-				LightSystem::resize(*_light, *_gbuffer);
+				mtxOrtho(frame.screenProjection, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 100.0f,
+					0.0f, bgfx::getCaps()->homogeneousDepth);
+				if (_gbuffer->width != frame.width || _gbuffer->height != frame.height)
+				{
+					GBufferSystem::resize(*_gbuffer, frame.width, frame.height);
+					LightSystem::resize(*_light, *_gbuffer);
+				}
+
+				GBufferSystem::update(frame, _meshes, *_gbuffer);
+				LightSystem::update(frame, *_gbuffer, _lights, *_light);
+				SkySystem::update(frame, *_light, _skies, *_sky);
+				CombineSystem::update(frame, *_gbuffer, *_light, _skies, *_combine);
 			}
 
-			GBufferSystem::update(frame, _meshes, *_gbuffer);
-			LightSystem::update(frame, *_gbuffer, _lights, *_light);
-			SkySystem::update(frame, *_light, _skies, *_sky);
-			CombineSystem::update(frame, *_gbuffer, *_light, _skies, *_combine);
+			UiSystem::update(_world, frame.width, frame.height);
 		}
 
 		static void endFrame()
@@ -103,8 +106,9 @@ namespace frost
 		}
 
 		static void shutdown(ResMutT<GBufferResource> _gbuffer, ResMutT<LightResource> _light,
-			ResMutT<SkyResource> _sky, ResMutT<CombineResource> _combine)
+			ResMutT<SkyResource> _sky, ResMutT<CombineResource> _combine, ResMutT<UiResource> _ui)
 		{
+			UiSystem::shutdown(*_ui);
 			CombineSystem::shutdown(*_combine);
 			SkySystem::shutdown(*_sky);
 			LightSystem::shutdown(*_light);

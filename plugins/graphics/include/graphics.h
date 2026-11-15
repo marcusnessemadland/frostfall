@@ -10,6 +10,7 @@
 #include <frost/asset.h>
 #include <frost/handle.h>
 #include <frost/math.h>
+#include <frost/string.h>
 
 namespace frost
 {
@@ -145,6 +146,67 @@ namespace frost
 
 namespace frost
 {
+	/// Screen-space UI root. Coordinates are drawable pixels divided by scale.
+	/// Children use the normal ECS hierarchy; higher layers draw last.
+	struct UiCanvasComponent
+	{
+		float scale = 1.0f;
+		int32_t layer = 0;
+		bool visible = true;
+	};
+
+	/// Rectangle relative to its parent. Zero dimensions measure text/layout content.
+	/// Anchors and pivots are fractions of the parent and own dimensions respectively.
+	/// A canvas without a node fills the drawable area. Hidden nodes hide their subtree.
+	struct UiNodeComponent
+	{
+		float x = 0.0f;
+		float y = 0.0f;
+		float width = 0.0f;
+		float height = 0.0f;
+		float anchorX = 0.0f;
+		float anchorY = 0.0f;
+		float pivotX = 0.0f;
+		float pivotY = 0.0f;
+		bool visible = true;
+		bool clip = false;
+		int32_t order = 0; //!< Sibling order; entity ID breaks ties.
+	};
+
+	struct UiLayoutComponent
+	{
+		enum Direction { Column, Row };
+		Direction direction = Column;
+		float padding = 0.0f;
+		float spacing = 0.0f;
+	};
+
+	/// UI colors are packed 0xRRGGBBAA, with straight alpha.
+	struct UiRectComponent
+	{
+		uint32_t color = 0xffffffff;
+		uint32_t outlineColor = 0x000000ff;
+		float outlineWidth = 0.0f;
+	};
+
+	/// Owned text using the built-in 8x8 bitmap font. Supports ASCII and newlines.
+	/// Height also sets the monospaced glyph width. Font assets can extend this later.
+	struct UiTextComponent
+	{
+		FixedString1024 text;
+		uint32_t color = 0xffffffff;
+		float height = 16.0f;
+	};
+
+	struct UiProgressBarComponent
+	{
+		float value = 0.0f;
+		float minimum = 0.0f;
+		float maximum = 1.0f;
+		uint32_t backgroundColor = 0x303030ff;
+		uint32_t fillColor = 0x80c0ffff;
+	};
+
 	struct RendererType
 	{
 		enum Enum

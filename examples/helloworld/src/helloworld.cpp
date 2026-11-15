@@ -10,6 +10,7 @@
 // Example
 #include "camera.h"
 #include "scene.h"
+#include <devmenu.h>
 
 namespace
 {
@@ -90,6 +91,42 @@ int main(int _argc, const char* _argv[])
 		app.insertResource<frost::GraphicsResource>(
 			frost::GraphicsResource{ width, height, frost::RendererType::Count /*auto*/ });
 		app.addPlugins<frost::GraphicsPlugin>();
+
+		app.insertResource<frost::DevmenuResource>();
+		app.addPlugins<frost::DevmenuPlugin>();
+
+		// Optional example entries, configured beside the plugin. The plugin owns the
+		// built-in pages; this application owns its custom hierarchy and actions.
+		struct ResetCameraItem { frost::Entity camera; };
+		app.addSystems(frost::EcsStage::PostStartup,
+			+[](frost::World& _world, frost::ResMutT<frost::DevmenuResource> _menu,
+				frost::ResT<SceneResource> _scene)
+			{
+				_menu->custom = _world.spawn().id();
+				const frost::Entity folder = _world.spawn(frost::DevmenuItemComponent{ "Example camera", 3 },
+					frost::DevmenuFolderComponent{}).setParent(_menu->custom).id();
+				const frost::Entity camera = _scene->instances[SceneResource::Player];
+				_world.spawn(frost::DevmenuItemComponent{ "Speed", 0 },
+					frost::DevmenuFloatComponent{ 0, 0.1, 100, 0.5, 1 },
+					frost::devmenuComponent<&ExampleCameraComponent::speed>(camera)).setParent(folder);
+				_world.spawn(frost::DevmenuItemComponent{ "Boost", 1 },
+					frost::DevmenuFloatComponent{ 0, 1, 20, 0.5, 1 },
+					frost::devmenuComponent<&ExampleCameraComponent::boost>(camera)).setParent(folder);
+				_world.spawn(frost::DevmenuItemComponent{ "Sensitivity", 2 },
+					frost::DevmenuFloatComponent{ 0, 0.0001, 0.02, 0.0001, 4 },
+					frost::devmenuComponent<&ExampleCameraComponent::sensitivity>(camera)).setParent(folder);
+				_world.spawn(frost::DevmenuItemComponent{ "Reset position", 3 },
+					frost::DevmenuButtonComponent{}, ResetCameraItem{ camera }).setParent(folder);
+			});
+		app.addSystems(frost::EcsStage::Update,
+			+[](frost::World& _world,
+				frost::QueryT<const frost::DevmenuButtonComponent&, const ResetCameraItem&> _buttons)
+			{
+				_buttons.each([&](const frost::DevmenuButtonComponent& _button, const ResetCameraItem& _item)
+				{
+					if (_button.activated) { _world.getMut<frost::CameraComponent>(_item.camera)->position = { 0, 3, -5 }; }
+				});
+			});
 
 	}
 	app.run();
