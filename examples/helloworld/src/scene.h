@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026-2027 Marcus Nesse Madland. All rights reserved.
+ * License: https://github.com/marcusnessemadland/bx/blob/main/LICENSE
+ */
+
 #ifndef FROST_EXAMPLE_HELLOWORLD_SCENE_H_HEADER_GUARD
 #define FROST_EXAMPLE_HELLOWORLD_SCENE_H_HEADER_GUARD
 
