@@ -8,19 +8,18 @@
 #include <frost/os.h>
 
 #include "graphics_p.h"
-#include "ui_p.h"
 
 namespace frost
 {
 	static bgfx::NativeWindowHandleType::Enum getBgfxWindowHandleType(NativeWindowHandleType::Enum _type)
 	{
-		// frost::NativeWindowHandleType is maintained a valid copy of bgfx::NativeWindowHandleType
+		// frost::NativeWindowHandleType is a maintained valid copy of bgfx::NativeWindowHandleType
 		return static_cast<bgfx::NativeWindowHandleType::Enum>(_type);
 	}
 
 	static bgfx::RendererType::Enum getBgfxRendererType(RendererType::Enum _type)
 	{
-		// frost::RendererType is maintained a valid copy of bgfx::RendererType
+		// frost::RendererType is a maintained valid copy of bgfx::RendererType
 		return static_cast<bgfx::RendererType::Enum>(_type);
 	}
 
