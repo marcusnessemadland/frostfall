@@ -249,8 +249,8 @@ namespace frost
 		static int32_t direction(const InputResource& _input, const TimeResource& _time,
 			const DevmenuResource& _menu, DevmenuState& _state)
 		{
-			const int32_t held = int32_t(_input.keys[_menu.up]) - int32_t(_input.keys[_menu.down]);
-			const int32_t pressed = int32_t(_input.pressed[_menu.up]) - int32_t(_input.pressed[_menu.down]);
+			const int32_t held = int32_t(_input.gamepad.buttons[_menu.up]) - int32_t(_input.gamepad.buttons[_menu.down]);
+			const int32_t pressed = int32_t(_input.gamepad.pressed[_menu.up]) - int32_t(_input.gamepad.pressed[_menu.down]);
 			if (0 != pressed)
 			{
 				_state.repeatDirection = held;
@@ -278,15 +278,16 @@ namespace frost
 			_world.query<DevmenuButtonComponent&>().each([&](DevmenuButtonComponent& _button)
 			{
 				_button.activated = false;
-				if (!_input.focused || !_input.keys[_menu.select] || !_menu.visible) { _button.pressed = false; }
+				if (!_input.focused || !_input.gamepad.connected
+				|| !_input.gamepad.buttons[_menu.select] || !_menu.visible) { _button.pressed = false; }
 			});
-			if (_input.focused && _input.pressed[_menu.toggle])
+			if (_input.focused && _input.gamepad.connected && _input.gamepad.pressed[_menu.toggle])
 			{
 				devmenuCancel(_world, _state);
 				_menu.visible = !_menu.visible;
 				_state.repeatDirection = 0;
 			}
-			if (!_menu.visible || !_input.focused)
+			if (!_menu.visible || !_input.focused || !_input.gamepad.connected)
 			{
 				devmenuCancel(_world, _state);
 				_state.repeatDirection = 0;
@@ -304,7 +305,7 @@ namespace frost
 				devmenuCancel(_world, _state);
 				_state.current = _menu.root;
 			}
-			if (_input.pressed[_menu.back])
+			if (_input.gamepad.pressed[_menu.back])
 			{
 				if (_world.contains(_state.editing)) { devmenuCancel(_world, _state); }
 				else if (_state.current != _menu.root) { goBack(_world, _menu, _state); }
@@ -319,7 +320,7 @@ namespace frost
 			if (_world.contains(_state.editing))
 			{
 				if (!devmenuVisible(_world, _state.editing)) { devmenuCancel(_world, _state); return; }
-				if (_input.pressed[_menu.select]) { _state.editing = {}; return; }
+				if (_input.gamepad.pressed[_menu.select]) { _state.editing = {}; return; }
 				if (auto* value = _world.get<DevmenuFloatComponent>(_state.editing))
 				{
 					if (0 != movement) { devmenuWrite(_world, _state.editing,
@@ -346,7 +347,7 @@ namespace frost
 				if (page.selection < first) { page.selection = last; }
 				if (page.selection > last) { page.selection = first; }
 			}
-			if (!_input.pressed[_menu.select]) { return; }
+			if (!_input.gamepad.pressed[_menu.select]) { return; }
 			if (-1 == page.selection) { goBack(_world, _menu, _state); return; }
 			if (0 == _state.count) { return; }
 			const Entity selected = _state.entries.getPtr(uint32_t(page.selection))->entity;

@@ -3,13 +3,16 @@
 Add `DevicePlugin`, `GraphicsPlugin`, then `DevmenuPlugin`. Link the `devmenu`
 CMake target. The plugin renders its UI through the public graphics components.
 
-F1 toggles **Dev Menu**. Up/Down navigate. Enter opens folders, toggles booleans,
-fires buttons once on press, or begins/commits numeric editing. While editing,
-Up/Down change the value live; Escape restores the value from before editing.
-Escape otherwise goes back or closes the root. F1 closing an unfinished edit
-also restores its original value. Gameplay input and simulation continue.
+The gamepad Start/Menu button toggles **Dev Menu**. D-pad Up/Down navigate.
+The bottom face button selects: it opens folders, toggles booleans, fires buttons
+once on press, or begins/commits numeric editing. While editing, D-pad Up/Down
+change the value live; the right face button cancels and restores the original
+value. Otherwise the right face button goes back or closes the root. Closing
+the menu, losing focus or disconnecting the gamepad cancels an unfinished edit.
+Gameplay input and simulation continue; the example suspends camera input while
+the menu is visible.
 
-`DevmenuResource` configures keybindings, key repeat, position, scale and width.
+`DevmenuResource` configures gamepad bindings, button repeat, position, scale and width.
 The menu starts hidden. Its Engine, Device and Graphics pages use public APIs.
 Graphics follows the active camera and the first sky/light by entity ID.
 

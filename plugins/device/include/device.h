@@ -330,12 +330,55 @@ namespace frost
 		};
 	};
 
-	/// Keyboard and mouse state sampled during PreUpdate.
+	/// Standard gamepad buttons, independent of the input backend.
+	struct GamepadButton
+	{
+		enum Enum
+		{
+			South,
+			East,
+			West,
+			North,
+			Back,
+			Guide,
+			Start,
+			LeftStick,
+			RightStick,
+			LeftShoulder,
+			RightShoulder,
+			DpadUp,
+			DpadDown,
+			DpadLeft,
+			DpadRight,
+
+			Count
+		};
+	};
+
+	/// One active gamepad. Sticks have a radial deadzone and range [-1, 1];
+	/// positive X is right and positive Y is down. Triggers range from 0 to 1.
+	struct GamepadState
+	{
+		bool connected = false;
+		float leftX = 0.0f;
+		float leftY = 0.0f;
+		float rightX = 0.0f;
+		float rightY = 0.0f;
+		float leftTrigger = 0.0f;
+		float rightTrigger = 0.0f;
+		bool buttons[GamepadButton::Count] = {};
+		bool pressed[GamepadButton::Count] = {};
+		bool released[GamepadButton::Count] = {};
+	};
+
+	/// Keyboard, mouse and gamepad state sampled during PreUpdate.
 	///
 	/// pressed, released, relative motion and wheel values are reset before event pumping.
 	///
 	struct InputResource
 	{
+		GamepadState gamepad;
+
 		/// Number of physical keyboard keys.
 		///
 		static constexpr uint32_t kNumKeys = Key::Count;
@@ -405,7 +448,7 @@ namespace frost
 	/// Creates the window and registers device/input resources and systems.
 	///
 	/// Adds DisplayResource and InputResource. Startup creates the window, PreUpdate pumps
-	/// events, and PostShutdown destroys the window and releases video state.
+	/// events, and PostShutdown releases the gamepad, window and SDL state.
 	///
 	struct DevicePlugin : PluginI
 	{

@@ -118,11 +118,11 @@ namespace frost
 		/// Devmenu never reparents or destroys this hierarchy.
 		Entity custom;
 
-		Key::Enum toggle = Key::F1;
-		Key::Enum up = Key::Up;
-		Key::Enum down = Key::Down;
-		Key::Enum select = Key::Enter;
-		Key::Enum back = Key::Escape;
+		GamepadButton::Enum toggle = GamepadButton::Start;
+		GamepadButton::Enum up = GamepadButton::DpadUp;
+		GamepadButton::Enum down = GamepadButton::DpadDown;
+		GamepadButton::Enum select = GamepadButton::South;
+		GamepadButton::Enum back = GamepadButton::East;
 		float repeatDelay = 0.35f;
 		float repeatInterval = 0.08f;
 		float x = 8.0f;
@@ -140,8 +140,8 @@ namespace frost
 	};
 
 	/// Requires DevicePlugin and GraphicsPlugin. Draws through graphics UI components.
-	/// Never consumes gameplay input or pauses simulation. Enter commits numeric edits;
-	/// Escape restores the original value. Closing the menu cancels an unfinished edit.
+	/// Never consumes gameplay input or pauses simulation. Select commits numeric edits;
+	/// Back restores the original value. Closing the menu cancels an unfinished edit.
 	struct DevmenuPlugin : PluginI
 	{
 		virtual void build(App& _app) override;

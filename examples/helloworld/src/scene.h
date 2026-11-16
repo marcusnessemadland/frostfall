@@ -103,11 +103,16 @@ namespace
 				_scene->instances[SceneResource::Sky] = _world.spawn(sky, frost::DirectionalLightComponent{}).id();
 			}
 
-			// Create flying camera entity.
+			// Create the player and orbit its transform.
 			{
+				frost::TransformComponent transform;
+				transform.position = { 0.0f, 3.0f, 0.0f };
 				frost::CameraComponent camera;
-				camera.position = { 0.0f, 3.0f, -5.0f };
-				_scene->instances[SceneResource::Player] = _world.spawn(camera, ExampleCameraComponent{}).id();
+				CameraComponent controller;
+				CameraSystem::reset(camera, controller, &transform);
+				const frost::Entity player = _world.spawn(transform, camera, controller).id();
+				_world.getMut<CameraComponent>(player)->target = player;
+				_scene->instances[SceneResource::Player] = player;
 			}
 
 			// Active camera on player entity TODO: Figure out a better way for this?

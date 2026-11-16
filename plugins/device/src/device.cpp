@@ -6,6 +6,7 @@
 #include <device.h>
 #include <frost/timer.h>
 #include <frost/os.h>
+#include <frost/math.h>
 
 #include <SDL3/SDL.h>
 
@@ -280,6 +281,65 @@ namespace frost
 		}
 	}
 
+	static const SDL_GamepadButton s_gamepadButtons[] =
+	{
+		SDL_GAMEPAD_BUTTON_SOUTH,
+		SDL_GAMEPAD_BUTTON_EAST,
+		SDL_GAMEPAD_BUTTON_WEST,
+		SDL_GAMEPAD_BUTTON_NORTH,
+		SDL_GAMEPAD_BUTTON_BACK,
+		SDL_GAMEPAD_BUTTON_GUIDE,
+		SDL_GAMEPAD_BUTTON_START,
+		SDL_GAMEPAD_BUTTON_LEFT_STICK,
+		SDL_GAMEPAD_BUTTON_RIGHT_STICK,
+		SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,
+		SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER,
+		SDL_GAMEPAD_BUTTON_DPAD_UP,
+		SDL_GAMEPAD_BUTTON_DPAD_DOWN,
+		SDL_GAMEPAD_BUTTON_DPAD_LEFT,
+		SDL_GAMEPAD_BUTTON_DPAD_RIGHT,
+	};
+	static_assert(FROST_COUNTOF(s_gamepadButtons) == GamepadButton::Count);
+
+	static SDL_Gamepad* openGamepad()
+	{
+		int count = 0;
+		SDL_JoystickID* ids = SDL_GetGamepads(&count);
+		SDL_Gamepad* gamepad = NULL;
+		for (int ii = 0; ii < count && NULL == gamepad; ++ii)
+		{
+			gamepad = SDL_OpenGamepad(ids[ii]);
+		}
+		SDL_free(ids);
+		return gamepad;
+	}
+
+	static void gamepadStick(SDL_Gamepad* _gamepad, SDL_GamepadAxis _x, SDL_GamepadAxis _y,
+		float& _outX, float& _outY)
+	{
+		const int16_t x = SDL_GetGamepadAxis(_gamepad, _x);
+		const int16_t y = SDL_GetGamepadAxis(_gamepad, _y);
+		const Vec3 stick = { float(x) / (x < 0 ? 32768.0f : 32767.0f),
+			float(y) / (y < 0 ? 32768.0f : 32767.0f), 0.0f };
+		const float magnitude = length(stick);
+		const float deadzone = 0.15f;
+		const float scale = magnitude > deadzone
+			? (min(magnitude, 1.0f) - deadzone) / ((1.0f - deadzone) * magnitude) : 0.0f;
+		_outX = stick.x * scale;
+		_outY = stick.y * scale;
+	}
+
+	static void clearGamepad(GamepadState& _state)
+	{
+		GamepadState cleared;
+		cleared.connected = _state.connected;
+		for (uint32_t ii = 0; ii < GamepadButton::Count; ++ii)
+		{
+			cleared.released[ii] = _state.buttons[ii] || _state.released[ii];
+		}
+		_state = cleared;
+	}
+
 	static void initializeNativeWindow(ResMutT<DisplayResource>& _display, SDL_Window* _window)
 	{
 		const SDL_PropertiesID properties = SDL_GetWindowProperties(_window);
@@ -330,13 +390,15 @@ namespace frost
 	struct SdlControlResource
 	{
 		App* app = NULL;
+		SDL_Gamepad* gamepad = NULL;
 	};
 
 	struct SdlSystem
 	{
-		static void startup(ResT<DeviceResource> _device, ResMutT<DisplayResource> _display)
+		static void startup(ResT<DeviceResource> _device, ResMutT<DisplayResource> _display,
+			ResMutT<SdlControlResource> _control)
 		{
-			if (!SDL_Init(SDL_INIT_VIDEO))
+			if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD))
 			{
 				debugPrintf("Failed to initialize SDL: %s\n", SDL_GetError());
 				frost::exit(kExitFailure, false);
@@ -354,6 +416,7 @@ namespace frost
 			}
 
 			_display->window = window;
+			_control->gamepad = openGamepad();
 
 			// Platform initialization
 			initializeNativeWindow(_display, window);
@@ -365,24 +428,58 @@ namespace frost
 			}
 		}
 
-		static void update(ResT<SdlControlResource> _control, ResMutT<DisplayResource> _display, ResMutT<InputResource> _input)
+		static void update(ResMutT<SdlControlResource> _control, ResMutT<DisplayResource> _display, ResMutT<InputResource> _input)
 		{
 			SDL_Window* window = ((SDL_Window*)(_display->window));
 			const SDL_WindowID windowId = SDL_GetWindowID(window);
 
 			frost::memSet(_input->pressed, 0, sizeof(_input->pressed));
 			frost::memSet(_input->released, 0, sizeof(_input->released));
+			frost::memSet(_input->gamepad.pressed, 0, sizeof(_input->gamepad.pressed));
+			frost::memSet(_input->gamepad.released, 0, sizeof(_input->gamepad.released));
 
 			_input->mouseDeltaX = 0;
 			_input->mouseDeltaY = 0;
 			_input->wheel = 0;
 
+			bool gamepadsChanged = false;
 			SDL_Event event;
 
 			while (SDL_PollEvent(&event))
 			{
 				switch (event.type)
 				{
+					case SDL_EVENT_GAMEPAD_ADDED:
+						gamepadsChanged = true;
+						break;
+					case SDL_EVENT_GAMEPAD_REMOVED:
+					{
+						if (NULL != _control->gamepad
+						&& event.gdevice.which == SDL_GetGamepadID(_control->gamepad))
+						{
+							SDL_CloseGamepad(_control->gamepad);
+							_control->gamepad = NULL;
+							clearGamepad(_input->gamepad);
+						}
+						gamepadsChanged = true;
+						break;
+					}
+					case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+					case SDL_EVENT_GAMEPAD_BUTTON_UP:
+					{
+						if (!_input->focused || NULL == _control->gamepad
+						|| event.gbutton.which != SDL_GetGamepadID(_control->gamepad)) { break; }
+						for (uint32_t ii = 0; ii < GamepadButton::Count; ++ii)
+						{
+							if (event.gbutton.button != s_gamepadButtons[ii]) { continue; }
+							const bool down = event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+							if (down && !_input->gamepad.buttons[ii]) { _input->gamepad.pressed[ii] = true; }
+							if (!down && _input->gamepad.buttons[ii]) { _input->gamepad.released[ii] = true; }
+							_input->gamepad.buttons[ii] = down;
+							break;
+						}
+						break;
+					}
 					case SDL_EVENT_QUIT:
 					{
 						_control->app->exit();
@@ -448,6 +545,7 @@ namespace frost
 						break;
 					case SDL_EVENT_WINDOW_FOCUS_LOST:
 						_input->focused = false;
+						clearGamepad(_input->gamepad);
 						_input->mouseButtons = 0;
 						frost::memSet(_input->keys, 0, sizeof(_input->keys));
 						break;
@@ -471,10 +569,40 @@ namespace frost
 					}
 				}
 			}
+
+			if (NULL == _control->gamepad && gamepadsChanged)
+			{
+				_control->gamepad = openGamepad();
+			}
+			GamepadState& gamepad = _input->gamepad;
+			gamepad.connected = NULL != _control->gamepad;
+			if (!gamepad.connected || !_input->focused)
+			{
+				clearGamepad(gamepad);
+				return;
+			}
+
+			gamepadStick(_control->gamepad, SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY,
+				gamepad.leftX, gamepad.leftY);
+			gamepadStick(_control->gamepad, SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY,
+				gamepad.rightX, gamepad.rightY);
+			gamepad.leftTrigger = clamp(float(SDL_GetGamepadAxis(_control->gamepad,
+				SDL_GAMEPAD_AXIS_LEFT_TRIGGER)) / 32767.0f, 0.0f, 1.0f);
+			gamepad.rightTrigger = clamp(float(SDL_GetGamepadAxis(_control->gamepad,
+				SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)) / 32767.0f, 0.0f, 1.0f);
+			for (uint32_t ii = 0; ii < GamepadButton::Count; ++ii)
+			{
+				const bool down = SDL_GetGamepadButton(_control->gamepad, s_gamepadButtons[ii]);
+				if (down && !gamepad.buttons[ii]) { gamepad.pressed[ii] = true; }
+				if (!down && gamepad.buttons[ii]) { gamepad.released[ii] = true; }
+				gamepad.buttons[ii] = down;
+			}
 		}
 
-		static void shutdown(ResMutT<DisplayResource> _display)
+		static void shutdown(ResMutT<DisplayResource> _display, ResMutT<SdlControlResource> _control)
 		{
+			SDL_CloseGamepad(_control->gamepad);
+			_control->gamepad = NULL;
 			SDL_Window* window = ((SDL_Window*)(_display->window));
 
 			SDL_DestroyWindow(window);
