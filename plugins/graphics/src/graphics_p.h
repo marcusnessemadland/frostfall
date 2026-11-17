@@ -689,6 +689,36 @@ namespace frost
 		return handle;
 	}
 
+	MeshHandle createMesh(const Memory* _mem, Error* _err)
+	{
+		FROST_ERROR_SCOPE(_err);
+		const MeshHandle handle = meshCreate(_mem, _err);
+		release(_mem);
+		return handle;
+	}
+
+	void addRef(MeshHandle _handle)
+	{
+		MeshRef* mesh = getMeshRef(_handle);
+		FROST_ASSERT(NULL != mesh && UINT32_MAX != mesh->refCount, "Cannot retain an invalid or overflowing mesh reference.");
+		++mesh->refCount;
+	}
+
+	void release(MeshHandle _handle)
+	{
+		if (!isValid(_handle) )
+		{
+			return;
+		}
+		MeshRef* mesh = getMeshRef(_handle);
+		FROST_ASSERT(NULL != mesh && 0 != mesh->refCount, "Cannot release an invalid mesh reference.");
+		if (0 == --mesh->refCount)
+		{
+			destroyMesh(*mesh);
+			s_meshContext->handles->free(_handle.idx);
+		}
+	}
+
 	struct MeshSystem
 	{
 		static void startup(World& _world, ResT<GraphicsResource> _graphics)
@@ -772,11 +802,35 @@ namespace frost
 {
 	struct RenderFrame
 	{
-		uint16_t width;
-		uint16_t height;
-		float view[16];
-		float projection[16];
-		float screenProjection[16];
+		uint16_t width = 0;
+		uint16_t height = 0;
+		bool active = false;
+		float view[16] = {};
+		float projection[16] = {};
+		float screenProjection[16] = {};
+	};
+
+	struct RenderFrameSystem
+	{
+		static void update(ResT<DisplayResource> _display, ResT<ActiveCameraResource> _activeCamera,
+			QueryT<const CameraComponent&> _cameras, ResMutT<RenderFrame> _frame)
+		{
+			_frame->width = uint16_t(_display->width);
+			_frame->height = uint16_t(_display->height);
+			_frame->active = false;
+			if (0 == _frame->width || 0 == _frame->height)
+			{
+				return;
+			}
+
+			_frame->active = getCameraMatrices(*_activeCamera, _cameras, _frame->width, _frame->height,
+				_frame->view, _frame->projection);
+			if (_frame->active)
+			{
+				mtxOrtho(_frame->screenProjection, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 100.0f,
+					0.0f, bgfx::getCaps()->homogeneousDepth);
+			}
+		}
 	};
 
 	struct GBufferResource
@@ -790,16 +844,16 @@ namespace frost
 
 	struct GBufferSystem
 	{
-		static void startup(GBufferResource& _gbuffer)
+		static void startup(ResMutT<GBufferResource> _gbuffer)
 		{
 			bgfx::setViewName(kRenderPassGeometry, "Geometry");
 
 			const bgfx::RendererType::Enum type = bgfx::getRendererType();
-			_gbuffer.program = bgfx::createProgram(
+			_gbuffer->program = bgfx::createProgram(
 				bgfx::createEmbeddedShader(s_embeddedShaders, type, "vs_deferred_geom"),
 				bgfx::createEmbeddedShader(s_embeddedShaders, type, "fs_deferred_geom"), true);
 
-			FROST_ASSERT(bgfx::isValid(_gbuffer.program), "Failed to create the geometry program.");
+			FROST_ASSERT(bgfx::isValid(_gbuffer->program), "Failed to create the geometry program.");
 
 			bgfx::setPaletteColor(0, UINT32_C(0x00000000));
 			bgfx::setPaletteColor(1, UINT32_C(0xffffffff));
@@ -830,13 +884,22 @@ namespace frost
 			_gbuffer.height = _height;
 		}
 
-		static void update(const RenderFrame& _frame,
-			QueryT<const MeshComponent&, OptionalT<const TransformComponent>> _meshes, const GBufferResource& _gbuffer)
+		static void update(ResT<RenderFrame> _frame,
+			QueryT<const MeshComponent&, OptionalT<const TransformComponent>> _meshes, ResMutT<GBufferResource> _gbuffer)
 		{
-			bgfx::setViewRect(kRenderPassGeometry, 0, 0, _frame.width, _frame.height);
-			bgfx::setViewFrameBuffer(kRenderPassGeometry, _gbuffer.frameBuffer);
+			if (!_frame->active)
+			{
+				return;
+			}
+			if (_gbuffer->width != _frame->width || _gbuffer->height != _frame->height)
+			{
+				resize(*_gbuffer, _frame->width, _frame->height);
+			}
+
+			bgfx::setViewRect(kRenderPassGeometry, 0, 0, _frame->width, _frame->height);
+			bgfx::setViewFrameBuffer(kRenderPassGeometry, _gbuffer->frameBuffer);
 			bgfx::setViewClear(kRenderPassGeometry, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 1.0f, 0, 1, 0);
-			bgfx::setViewTransform(kRenderPassGeometry, _frame.view, _frame.projection);
+			bgfx::setViewTransform(kRenderPassGeometry, _frame->view, _frame->projection);
 			bgfx::touch(kRenderPassGeometry);
 
 			_meshes.each([&](const MeshComponent& _mesh, const TransformComponent* _transform)
@@ -874,19 +937,19 @@ namespace frost
 						bgfx::setVertexBuffer(0, group.vertexBuffer);
 						bgfx::setIndexBuffer(group.indexBuffer, primitive.startIndex, primitive.numIndices);
 						bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
-						bgfx::submit(kRenderPassGeometry, _gbuffer.program);
+						bgfx::submit(kRenderPassGeometry, _gbuffer->program);
 					}
 				}
 			});
 		}
 
-		static void shutdown(GBufferResource& _gbuffer)
+		static void shutdown(ResMutT<GBufferResource> _gbuffer)
 		{
-			if (bgfx::isValid(_gbuffer.frameBuffer))
+			if (bgfx::isValid(_gbuffer->frameBuffer))
 			{
-				bgfx::destroy(_gbuffer.frameBuffer);
+				bgfx::destroy(_gbuffer->frameBuffer);
 			}
-			bgfx::destroy(_gbuffer.program);
+			bgfx::destroy(_gbuffer->program);
 		}
 	};
 
@@ -904,26 +967,28 @@ namespace frost
 		bgfx::VertexLayout layout;
 		bgfx::FrameBufferHandle frameBuffer = BGFX_INVALID_HANDLE;
 		bgfx::TextureHandle texture = BGFX_INVALID_HANDLE;
+		uint32_t width = 0;
+		uint32_t height = 0;
 	};
 
 	struct LightSystem
 	{
-		static void startup(LightResource& _light)
+		static void startup(ResMutT<LightResource> _light)
 		{
 			bgfx::setViewName(kRenderPassLight, "Directional Light");
 
 			const bgfx::RendererType::Enum type = bgfx::getRendererType();
-			_light.program = bgfx::createProgram(
+			_light->program = bgfx::createProgram(
 				bgfx::createEmbeddedShader(s_embeddedShaders, type, "vs_deferred_light"),
 				bgfx::createEmbeddedShader(s_embeddedShaders, type, "fs_deferred_light"), true);
 
-			FROST_ASSERT(bgfx::isValid(_light.program), "Failed to create the lighting program.");
+			FROST_ASSERT(bgfx::isValid(_light->program), "Failed to create the lighting program.");
 
-			_light.s_normal = bgfx::createUniform("s_normal", bgfx::UniformType::Sampler);
-			_light.u_sunDirection = bgfx::createUniform("u_sunDirection", bgfx::UniformType::Vec4);
-			_light.u_sunLuminance = bgfx::createUniform("u_sunLuminance", bgfx::UniformType::Vec4);
+			_light->s_normal = bgfx::createUniform("s_normal", bgfx::UniformType::Sampler);
+			_light->u_sunDirection = bgfx::createUniform("u_sunDirection", bgfx::UniformType::Vec4);
+			_light->u_sunLuminance = bgfx::createUniform("u_sunLuminance", bgfx::UniformType::Vec4);
 
-			_light.layout.begin().add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
+			_light->layout.begin().add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
 				.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float).end();
 		}
 
@@ -947,15 +1012,26 @@ namespace frost
 			_light.frameBuffer = bgfx::createFrameBuffer(2, attachments, true);
 
 			FROST_ASSERT(bgfx::isValid(_light.frameBuffer), "Failed to create the lighting framebuffer.");
+			_light.width = _gbuffer.width;
+			_light.height = _gbuffer.height;
 		}
 
-		static void update(const RenderFrame& _frame, const GBufferResource& _gbuffer,
-			QueryT<const DirectionalLightComponent&> _lights, const LightResource& _light)
+		static void update(ResT<RenderFrame> _frame, ResT<GBufferResource> _gbuffer,
+			QueryT<const DirectionalLightComponent&> _lights, ResMutT<LightResource> _light)
 		{
-			bgfx::setViewRect(kRenderPassLight, 0, 0, _frame.width, _frame.height);
-			bgfx::setViewFrameBuffer(kRenderPassLight, _light.frameBuffer);
+			if (!_frame->active)
+			{
+				return;
+			}
+			if (_light->width != _frame->width || _light->height != _frame->height)
+			{
+				resize(*_light, *_gbuffer);
+			}
+
+			bgfx::setViewRect(kRenderPassLight, 0, 0, _frame->width, _frame->height);
+			bgfx::setViewFrameBuffer(kRenderPassLight, _light->frameBuffer);
 			bgfx::setViewClear(kRenderPassLight, BGFX_CLEAR_COLOR, UINT32_C(0x00000000));
-			bgfx::setViewTransform(kRenderPassLight, NULL, _frame.screenProjection);
+			bgfx::setViewTransform(kRenderPassLight, NULL, _frame->screenProjection);
 			bgfx::touch(kRenderPassLight);
 
 			_lights.each([&](const DirectionalLightComponent& _component)
@@ -980,26 +1056,26 @@ namespace frost
 				float luminance[4] = {};
 				store(luminance, mul(color, _component.intensity));
 
-				screenSpaceTriangle(_light.layout);
+				screenSpaceTriangle(_light->layout);
 
-				bgfx::setUniform(_light.u_sunDirection, direction);
-				bgfx::setUniform(_light.u_sunLuminance, luminance);
-				bgfx::setTexture(0, _light.s_normal, _gbuffer.textures[1]);
+				bgfx::setUniform(_light->u_sunDirection, direction);
+				bgfx::setUniform(_light->u_sunLuminance, luminance);
+				bgfx::setTexture(0, _light->s_normal, _gbuffer->textures[1]);
 				bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_BLEND_ADD);
-				bgfx::submit(kRenderPassLight, _light.program);
+				bgfx::submit(kRenderPassLight, _light->program);
 			});
 		}
 
-		static void shutdown(LightResource& _light)
+		static void shutdown(ResMutT<LightResource> _light)
 		{
-			if (bgfx::isValid(_light.frameBuffer))
+			if (bgfx::isValid(_light->frameBuffer))
 			{
-				bgfx::destroy(_light.frameBuffer);
+				bgfx::destroy(_light->frameBuffer);
 			}
-			bgfx::destroy(_light.program);
-			bgfx::destroy(_light.s_normal);
-			bgfx::destroy(_light.u_sunDirection);
-			bgfx::destroy(_light.u_sunLuminance);
+			bgfx::destroy(_light->program);
+			bgfx::destroy(_light->s_normal);
+			bgfx::destroy(_light->u_sunDirection);
+			bgfx::destroy(_light->u_sunLuminance);
 		}
 	};
 
@@ -1151,20 +1227,20 @@ namespace frost
 			});
 		}
 
-		static void startup(SkyResource& _sky)
+		static void startup(ResMutT<SkyResource> _sky)
 		{
 			bgfx::setViewName(kRenderPassSky, "Sky");
 
 			const bgfx::RendererType::Enum type = bgfx::getRendererType();
-			_sky.program = bgfx::createProgram(
+			_sky->program = bgfx::createProgram(
 				bgfx::createEmbeddedShader(s_embeddedShaders, type, "vs_sky"),
 				bgfx::createEmbeddedShader(s_embeddedShaders, type, "fs_sky"), true);
 
-			_sky.u_sunDirection = bgfx::createUniform("u_sunDirection", bgfx::UniformType::Vec4);
-			_sky.u_skyLuminanceXYZ = bgfx::createUniform("u_skyLuminanceXYZ", bgfx::UniformType::Vec4);
-			_sky.u_sunTint = bgfx::createUniform("u_sunTint", bgfx::UniformType::Vec4);
-			_sky.u_parameters = bgfx::createUniform("u_parameters", bgfx::UniformType::Vec4);
-			_sky.u_perezCoeff = bgfx::createUniform("u_perezCoeff", bgfx::UniformType::Vec4, 5);
+			_sky->u_sunDirection = bgfx::createUniform("u_sunDirection", bgfx::UniformType::Vec4);
+			_sky->u_skyLuminanceXYZ = bgfx::createUniform("u_skyLuminanceXYZ", bgfx::UniformType::Vec4);
+			_sky->u_sunTint = bgfx::createUniform("u_sunTint", bgfx::UniformType::Vec4);
+			_sky->u_parameters = bgfx::createUniform("u_parameters", bgfx::UniformType::Vec4);
+			_sky->u_perezCoeff = bgfx::createUniform("u_perezCoeff", bgfx::UniformType::Vec4, 5);
 
 			struct Vertex { float x, y; };
 			Vertex vertices[32 * 32];
@@ -1194,20 +1270,25 @@ namespace frost
 
 			bgfx::VertexLayout layout;
 			layout.begin().add(bgfx::Attrib::Position, 2, bgfx::AttribType::Float).end();
-			_sky.vertices = bgfx::createVertexBuffer(bgfx::copy(vertices, sizeof(vertices)), layout);
-			_sky.indices = bgfx::createIndexBuffer(bgfx::copy(indices, sizeof(indices)));
+			_sky->vertices = bgfx::createVertexBuffer(bgfx::copy(vertices, sizeof(vertices)), layout);
+			_sky->indices = bgfx::createIndexBuffer(bgfx::copy(indices, sizeof(indices)));
 
-			FROST_ASSERT(bgfx::isValid(_sky.program) && bgfx::isValid(_sky.vertices) && bgfx::isValid(_sky.indices),
+			FROST_ASSERT(bgfx::isValid(_sky->program) && bgfx::isValid(_sky->vertices) && bgfx::isValid(_sky->indices),
 				"Failed to create sky rendering resources.");
 		}
 
-		static void update(const RenderFrame& _frame, const LightResource& _light,
-			QueryT<const SkyComponent&> _skies, const SkyResource& _sky)
+		static void update(ResT<RenderFrame> _frame, ResT<LightResource> _light,
+			QueryT<const SkyComponent&> _skies, ResT<SkyResource> _sky)
 		{
-			bgfx::setViewRect(kRenderPassSky, 0, 0, _frame.width, _frame.height);
-			bgfx::setViewFrameBuffer(kRenderPassSky, _light.frameBuffer);
+			if (!_frame->active)
+			{
+				return;
+			}
+
+			bgfx::setViewRect(kRenderPassSky, 0, 0, _frame->width, _frame->height);
+			bgfx::setViewFrameBuffer(kRenderPassSky, _light->frameBuffer);
 			bgfx::setViewClear(kRenderPassSky, BGFX_CLEAR_NONE);
-			bgfx::setViewTransform(kRenderPassSky, _frame.view, _frame.projection);
+			bgfx::setViewTransform(kRenderPassSky, _frame->view, _frame->projection);
 
 			_skies.single([&](const SkyComponent& _component)
 			{
@@ -1238,31 +1319,31 @@ namespace frost
 					store(&perez[ii * 4], mad(s_perezTurbidity[ii], turbidity, s_perezBase[ii]));
 				}
 
-				bgfx::setUniform(_sky.u_sunDirection, direction);
-				bgfx::setUniform(_sky.u_skyLuminanceXYZ, luminance);
-				bgfx::setUniform(_sky.u_sunTint, sunTint);
-				bgfx::setUniform(_sky.u_parameters, parameters);
-				bgfx::setUniform(_sky.u_perezCoeff, perez, 5);
+				bgfx::setUniform(_sky->u_sunDirection, direction);
+				bgfx::setUniform(_sky->u_skyLuminanceXYZ, luminance);
+				bgfx::setUniform(_sky->u_sunTint, sunTint);
+				bgfx::setUniform(_sky->u_parameters, parameters);
+				bgfx::setUniform(_sky->u_perezCoeff, perez, 5);
 
-				bgfx::setVertexBuffer(0, _sky.vertices);
-				bgfx::setIndexBuffer(_sky.indices);
+				bgfx::setVertexBuffer(0, _sky->vertices);
+				bgfx::setIndexBuffer(_sky->indices);
 
 				bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_DEPTH_TEST_EQUAL);
 
-				bgfx::submit(kRenderPassSky, _sky.program);
+				bgfx::submit(kRenderPassSky, _sky->program);
 			});
 		}
 
-		static void shutdown(SkyResource& _sky)
+		static void shutdown(ResMutT<SkyResource> _sky)
 		{
-			bgfx::destroy(_sky.vertices);
-			bgfx::destroy(_sky.indices);
-			bgfx::destroy(_sky.program);
-			bgfx::destroy(_sky.u_sunDirection);
-			bgfx::destroy(_sky.u_skyLuminanceXYZ);
-			bgfx::destroy(_sky.u_sunTint);
-			bgfx::destroy(_sky.u_parameters);
-			bgfx::destroy(_sky.u_perezCoeff);
+			bgfx::destroy(_sky->vertices);
+			bgfx::destroy(_sky->indices);
+			bgfx::destroy(_sky->program);
+			bgfx::destroy(_sky->u_sunDirection);
+			bgfx::destroy(_sky->u_skyLuminanceXYZ);
+			bgfx::destroy(_sky->u_sunTint);
+			bgfx::destroy(_sky->u_parameters);
+			bgfx::destroy(_sky->u_perezCoeff);
 		}
 	};
 
@@ -1282,29 +1363,44 @@ namespace frost
 
 	struct CombineSystem
 	{
-		static void startup(CombineResource& _combine)
+		static void startup(ResMutT<CombineResource> _combine)
 		{
 			bgfx::setViewName(kRenderPassCombine, "Combine");
 
 			const bgfx::RendererType::Enum type = bgfx::getRendererType();
-			_combine.program = bgfx::createProgram(
+			_combine->program = bgfx::createProgram(
 				bgfx::createEmbeddedShader(s_embeddedShaders, type, "vs_deferred_combine"),
 				bgfx::createEmbeddedShader(s_embeddedShaders, type, "fs_deferred_combine"), true);
 
-			FROST_ASSERT(bgfx::isValid(_combine.program), "Failed to create the combine program.");
+			FROST_ASSERT(bgfx::isValid(_combine->program), "Failed to create the combine program.");
 
-			_combine.s_albedo = bgfx::createUniform("s_albedo", bgfx::UniformType::Sampler);
-			_combine.s_light = bgfx::createUniform("s_light", bgfx::UniformType::Sampler);
-			_combine.u_outputParameters = bgfx::createUniform("u_outputParameters", bgfx::UniformType::Vec4);
+			_combine->s_albedo = bgfx::createUniform("s_albedo", bgfx::UniformType::Sampler);
+			_combine->s_light = bgfx::createUniform("s_light", bgfx::UniformType::Sampler);
+			_combine->u_outputParameters = bgfx::createUniform("u_outputParameters", bgfx::UniformType::Vec4);
 
-			_combine.layout.begin().add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
+			_combine->layout.begin().add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
 				.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float).end();
 		}
 
-		static void update(const RenderFrame& _frame, const GBufferResource& _gbuffer,
-			const LightResource& _light, QueryT<const SkyComponent&> _skies, const CombineResource& _combine)
+		static void update(ResT<RenderFrame> _frame, ResT<GBufferResource> _gbuffer,
+			ResT<LightResource> _light, QueryT<const SkyComponent&> _skies, ResT<CombineResource> _combine)
 		{
-			screenSpaceTriangle(_combine.layout);
+			if (0 == _frame->width || 0 == _frame->height)
+			{
+				return;
+			}
+
+			// Clear presentation even when there is no selected camera.
+			bgfx::setViewRect(kRenderPassCombine, 0, 0, _frame->width, _frame->height);
+			bgfx::setViewFrameBuffer(kRenderPassCombine, BGFX_INVALID_HANDLE);
+			bgfx::setViewClear(kRenderPassCombine, BGFX_CLEAR_COLOR, UINT32_C(0x000000ff));
+			bgfx::touch(kRenderPassCombine);
+			if (!_frame->active)
+			{
+				return;
+			}
+
+			screenSpaceTriangle(_combine->layout);
 
 			float output[4] = {};
 			_skies.single([&](const SkyComponent& _sky)
@@ -1313,23 +1409,23 @@ namespace frost
 				output[1] = isFinite(_sky.time) ? wrap(_sky.time, 24.0f) : 12.0f;
 			});
 
-			bgfx::setViewTransform(kRenderPassCombine, NULL, _frame.screenProjection);
+			bgfx::setViewTransform(kRenderPassCombine, NULL, _frame->screenProjection);
 
-			bgfx::setUniform(_combine.u_outputParameters, output);
-			bgfx::setTexture(0, _combine.s_albedo, _gbuffer.textures[0]);
-			bgfx::setTexture(1, _combine.s_light, _light.texture);
+			bgfx::setUniform(_combine->u_outputParameters, output);
+			bgfx::setTexture(0, _combine->s_albedo, _gbuffer->textures[0]);
+			bgfx::setTexture(1, _combine->s_light, _light->texture);
 
 			bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
 
-			bgfx::submit(kRenderPassCombine, _combine.program);
+			bgfx::submit(kRenderPassCombine, _combine->program);
 		}
 
-		static void shutdown(CombineResource& _combine)
+		static void shutdown(ResMutT<CombineResource> _combine)
 		{
-			bgfx::destroy(_combine.program);
-			bgfx::destroy(_combine.s_albedo);
-			bgfx::destroy(_combine.s_light);
-			bgfx::destroy(_combine.u_outputParameters);
+			bgfx::destroy(_combine->program);
+			bgfx::destroy(_combine->s_albedo);
+			bgfx::destroy(_combine->s_light);
+			bgfx::destroy(_combine->u_outputParameters);
 		}
 	};
 
@@ -1591,8 +1687,15 @@ namespace frost
 			}
 		}
 
-		static void update(World& _world, uint16_t _width, uint16_t _height)
+		static void update(World& _world, ResT<RenderFrame> _frame)
 		{
+			const uint16_t _width = _frame->width;
+			const uint16_t _height = _frame->height;
+			if (0 == _width || 0 == _height)
+			{
+				return;
+			}
+
 			UiResource& ui = *_world.getResourceMut<UiResource>();
 			// Build contiguous, ordered child ranges once; layout and drawing share them.
 			ui.nodeCount = 0;
@@ -1658,11 +1761,11 @@ namespace frost
 			}
 		}
 
-		static void shutdown(UiResource& _ui)
+		static void shutdown(ResMutT<UiResource> _ui)
 		{
-			bgfx::destroy(_ui.program);
-			bgfx::destroy(_ui.atlas);
-			bgfx::destroy(_ui.sampler);
+			bgfx::destroy(_ui->program);
+			bgfx::destroy(_ui->atlas);
+			bgfx::destroy(_ui->sampler);
 		}
 	};
 
