@@ -6,6 +6,9 @@
 #include <algorithm>
 
 #include <graphics.h>
+#include <frost/settings.h>
+#include <frost/file.h>
+#include "../../3rdparty/mikktspace/mikktspace.h"
 
 #include <bx/string.h>
 #include <bgfx/bgfx.h>
@@ -71,6 +74,8 @@ struct Index3
 struct TriIndices
 {
 	Index3 m_index[3];
+	float m_tangents[3][4] = {};
+	bool m_hasTangents = false;
 };
 
 typedef stl::vector<TriIndices> TriangleArray;
@@ -147,6 +152,7 @@ struct Mesh
 	Vec3Array     m_texcoords;
 	TriangleArray m_triangles;
 	GroupArray    m_groups;
+	cgltf_material* m_gltfMaterials = NULL;
 
 	CoordinateSystem m_coordinateSystem;
 };
@@ -239,111 +245,44 @@ void writeCompressedVertices(
 	free(compressedVertices);
 }
 
-void calcTangents(void* _vertices, uint16_t _numVertices, bgfx::VertexLayout _layout, const uint16_t* _indices, uint32_t _numIndices)
+// MikkTSpace is evaluated per triangle corner before welding, preserving UV seams.
+static void generateTangents(Mesh& _mesh)
 {
-	struct PosTexcoord
+	SMikkTSpaceInterface callbacks = {};
+	callbacks.m_getNumFaces = [](const SMikkTSpaceContext* _context) { return int(((Mesh*)_context->m_pUserData)->m_triangles.size()); };
+	callbacks.m_getNumVerticesOfFace = [](const SMikkTSpaceContext*, int) { return 3; };
+	callbacks.m_getPosition = [](const SMikkTSpaceContext* _context, float _out[], int _face, int _vertex)
 	{
-		float m_x;
-		float m_y;
-		float m_z;
-		float m_pad0;
-		float m_u;
-		float m_v;
-		float m_pad1;
-		float m_pad2;
+		const Mesh& mesh = *(const Mesh*)_context->m_pUserData;
+		bx::store(_out, mesh.m_positions[mesh.m_triangles[_face].m_index[_vertex].m_position]);
 	};
-
-	float* tangents = new float[6*_numVertices];
-	bx::memSet(tangents, 0, 6*_numVertices*sizeof(float) );
-
-	PosTexcoord v0;
-	PosTexcoord v1;
-	PosTexcoord v2;
-
-	for (uint32_t ii = 0, num = _numIndices/3; ii < num; ++ii)
+	callbacks.m_getNormal = [](const SMikkTSpaceContext* _context, float _out[], int _face, int _vertex)
 	{
-		const uint16_t* indices = &_indices[ii*3];
-		uint32_t i0 = indices[0];
-		uint32_t i1 = indices[1];
-		uint32_t i2 = indices[2];
-
-		bgfx::vertexUnpack(&v0.m_x, bgfx::Attrib::Position, _layout, _vertices, i0);
-		bgfx::vertexUnpack(&v0.m_u, bgfx::Attrib::TexCoord0, _layout, _vertices, i0);
-
-		bgfx::vertexUnpack(&v1.m_x, bgfx::Attrib::Position, _layout, _vertices, i1);
-		bgfx::vertexUnpack(&v1.m_u, bgfx::Attrib::TexCoord0, _layout, _vertices, i1);
-
-		bgfx::vertexUnpack(&v2.m_x, bgfx::Attrib::Position, _layout, _vertices, i2);
-		bgfx::vertexUnpack(&v2.m_u, bgfx::Attrib::TexCoord0, _layout, _vertices, i2);
-
-		const float bax = v1.m_x - v0.m_x;
-		const float bay = v1.m_y - v0.m_y;
-		const float baz = v1.m_z - v0.m_z;
-		const float bau = v1.m_u - v0.m_u;
-		const float bav = v1.m_v - v0.m_v;
-
-		const float cax = v2.m_x - v0.m_x;
-		const float cay = v2.m_y - v0.m_y;
-		const float caz = v2.m_z - v0.m_z;
-		const float cau = v2.m_u - v0.m_u;
-		const float cav = v2.m_v - v0.m_v;
-
-		const float det = (bau * cav - bav * cau);
-		if (!bx::isFinite(det) || bx::abs(det) <= 1.0e-12f)
-		{
-			bx::printf("Cannot generate tangents: triangle %u has degenerate UVs.\n", ii);
-			exit(bx::kExitFailure);
-		}
-		const float invDet = 1.0f / det;
-
-		const float tx = (bax * cav - cax * bav) * invDet;
-		const float ty = (bay * cav - cay * bav) * invDet;
-		const float tz = (baz * cav - caz * bav) * invDet;
-
-		const float bx = (cax * bau - bax * cau) * invDet;
-		const float by = (cay * bau - bay * cau) * invDet;
-		const float bz = (caz * bau - baz * cau) * invDet;
-
-		for (uint32_t jj = 0; jj < 3; ++jj)
-		{
-			float* tanu = &tangents[indices[jj]*6];
-			float* tanv = &tanu[3];
-			tanu[0] += tx;
-			tanu[1] += ty;
-			tanu[2] += tz;
-
-			tanv[0] += bx;
-			tanv[1] += by;
-			tanv[2] += bz;
-		}
-	}
-
-	for (uint32_t ii = 0; ii < _numVertices; ++ii)
+		const Mesh& mesh = *(const Mesh*)_context->m_pUserData;
+		bx::store(_out, bx::normalize(mesh.m_normals[mesh.m_triangles[_face].m_index[_vertex].m_normal]));
+	};
+	callbacks.m_getTexCoord = [](const SMikkTSpaceContext* _context, float _out[], int _face, int _vertex)
 	{
-		const bx::Vec3 tanu = bx::load<bx::Vec3>(&tangents[ii*6]);
-		const bx::Vec3 tanv = bx::load<bx::Vec3>(&tangents[ii*6 + 3]);
-
-		float nxyzw[4];
-		bgfx::vertexUnpack(nxyzw, bgfx::Attrib::Normal, _layout, _vertices, ii);
-
-		const bx::Vec3 normal  = bx::load<bx::Vec3>(nxyzw);
-		const float    ndt     = bx::dot(normal, tanu);
-		const bx::Vec3 nxt     = bx::cross(normal, tanu);
-		const bx::Vec3 tmp     = bx::sub(tanu, bx::mul(normal, ndt) );
-		if (!bx::isFinite(bx::dot(tmp, tmp)) || bx::dot(tmp, tmp) <= 1.0e-12f)
+		const Mesh& mesh = *(const Mesh*)_context->m_pUserData;
+		const bx::Vec3& uv = mesh.m_texcoords[mesh.m_triangles[_face].m_index[_vertex].m_texcoord];
+		_out[0] = uv.x;
+		_out[1] = uv.y;
+	};
+	callbacks.m_setTSpaceBasic = [](const SMikkTSpaceContext* _context, const float _tangent[], float _sign, int _face, int _vertex)
+	{
+		TriIndices& triangle = ((Mesh*)_context->m_pUserData)->m_triangles[_face];
+		if (!triangle.m_hasTangents)
 		{
-			bx::printf("Cannot generate tangents: vertex %u has an invalid tangent basis.\n", ii);
-			exit(bx::kExitFailure);
+			bx::memCopy(triangle.m_tangents[_vertex], _tangent, 3 * sizeof(float));
+			triangle.m_tangents[_vertex][3] = _sign;
 		}
-
-		float tangent[4];
-		bx::store(tangent, bx::normalize(tmp) );
-		tangent[3] = bx::dot(nxt, tanv) < 0.0f ? -1.0f : 1.0f;
-
-		bgfx::vertexPack(tangent, true, bgfx::Attrib::Tangent, _layout, _vertices, ii);
+	};
+	SMikkTSpaceContext context = { &callbacks, &_mesh };
+	if (!genTangSpaceDefault(&context))
+	{
+		bx::printf("Unable to generate MikkTSpace tangents.\n");
+		exit(bx::kExitFailure);
 	}
-
-	delete [] tangents;
 }
 
 #if BX_CPU_ENDIAN_BIG
@@ -442,13 +381,13 @@ void write(
 	, const uint16_t* _indices
 	, uint32_t _numIndices
 	, bool _compress
-	, const stl::string& _material
+	, uint16_t _materialSlot
 	, const PrimitiveArray& _primitives
 	, bx::Error* _err
 	)
 {
 	const uint16_t stride = _layout.getStride();
-	if (UINT16_MAX < _material.size() || UINT16_MAX < _primitives.size()
+	if (UINT16_MAX < _primitives.size()
 	|| (_compress && (0 != stride % 4 || 256 < stride) ) )
 	{
 		BX_ERROR_SET(_err, bx::kErrorReaderWriterWrite, "Mesh group exceeds its format limits.");
@@ -498,8 +437,7 @@ void write(
 	bx::writeLE(_writer, _numVertices, _err);
 	bx::writeLE(_writer, _numIndices, _err);
 	bx::writeLE(_writer, uint32_t(_compress ? frost::MeshFormat::VertexCompressed | frost::MeshFormat::IndexCompressed : 0), _err);
-	bx::writeLE(_writer, uint16_t(_material.size() ), _err);
-	bx::write(_writer, _material.c_str(), uint32_t(_material.size() ), _err);
+	bx::writeLE(_writer, _materialSlot, _err);
 	bx::writeLE(_writer, uint16_t(_primitives.size() ), _err);
 
 	const uint8_t* vertexData = _vertices;
@@ -873,10 +811,27 @@ void processGltfNode(cgltf_node* _node, Mesh* _mesh, Group* _group, bool _hasBc)
 		cgltf_node_transform_world(_node, nodeToWorld);
 		float nodeToWorldNormal[16];
 		bx::mtxCofactor(nodeToWorldNormal, nodeToWorld);
+		const float nodeDeterminant = bx::dot(bx::cross(bx::load<bx::Vec3>(nodeToWorld),
+			bx::load<bx::Vec3>(nodeToWorld + 4)), bx::load<bx::Vec3>(nodeToWorld + 8));
+		if (!bx::isFinite(nodeDeterminant) || bx::abs(nodeDeterminant) < 1.0e-12f)
+		{
+			bx::printf("glTF mesh requires a finite nonsingular node transform.\n");
+			exit(1);
+		}
 
 		for (cgltf_size primitiveIndex = 0; primitiveIndex < mesh->primitives_count; ++primitiveIndex)
 		{
 			cgltf_primitive* primitive = &mesh->primitives[primitiveIndex];
+			if (cgltf_primitive_type_triangles != primitive->type) { bx::printf("Only glTF triangle primitives are supported.\n"); exit(1); }
+			if (NULL != primitive->material)
+			{
+				char materialName[64];
+				bx::snprintf(materialName, sizeof(materialName), "material_%u", uint32_t(primitive->material - _mesh->m_gltfMaterials));
+				_group->m_material = NULL != primitive->material->name ? primitive->material->name : materialName;
+			}
+			else { _group->m_material = ""; }
+			struct Tangent { float value[4]; };
+			stl::vector<Tangent> tangents;
 
 			cgltf_size numVertex = primitive->attributes[0].data->count;
 
@@ -924,8 +879,19 @@ void processGltfNode(cgltf_node* _node, Mesh* _mesh, Group* _group, bool _hasBc)
 					for (cgltf_size v = 0; v < accessorCount; ++v)
 					{
 						gltfReadFloat(accessorData, numComponents, v, &normal.x, 3);
-						normal = mul(normal, nodeToWorldNormal);
+						normal = bx::mul(bx::mulXyz0(normal, nodeToWorldNormal), nodeDeterminant < 0.0f ? -1.0f : 1.0f);
 						_mesh->m_normals.push_back(normal);
+					}
+				}
+				else if (attribute->type == cgltf_attribute_type_tangent && attribute->index == 0)
+				{
+					tangents.resize(accessorCount);
+					for (cgltf_size v = 0; v < accessorCount; ++v)
+					{
+						gltfReadFloat(accessorData, numComponents, v, tangents[v].value, 4);
+						const bx::Vec3 tangent = bx::mulXyz0(bx::load<bx::Vec3>(tangents[v].value), nodeToWorld);
+						bx::store(tangents[v].value, bx::normalize(tangent));
+						tangents[v].value[3] *= nodeDeterminant < 0.0f ? -1.0f : 1.0f;
 					}
 				}
 				else if (attribute->type == cgltf_attribute_type_texcoord && attribute->index == 0)
@@ -961,6 +927,16 @@ void processGltfNode(cgltf_node* _node, Mesh* _mesh, Group* _group, bool _hasBc)
 						index.m_texcoord = hasTexcoord ? baseTexcoordIndex + vertexIndex : -1;
 						index.m_vbc      = _hasBc      ? i                               :  0;
 						triangle.m_index[i] = index;
+						if (!tangents.empty())
+						{
+							triangle.m_hasTangents = true;
+							bx::memCopy(triangle.m_tangents[i], tangents[vertexIndex].value, 4 * sizeof(float));
+						}
+					}
+					if (nodeDeterminant < 0.0f)
+					{
+						bx::swap(triangle.m_index[1], triangle.m_index[2]);
+						for (uint32_t jj = 0; jj < 4; ++jj) { bx::swap(triangle.m_tangents[1][jj], triangle.m_tangents[2][jj]); }
 					}
 					_mesh->m_triangles.push_back(triangle);
 				}
@@ -973,12 +949,22 @@ void processGltfNode(cgltf_node* _node, Mesh* _mesh, Group* _group, bool _hasBc)
 					for (int i = 0; i < 3; ++i)
 					{
 						Index3 index;
-						int32_t vertexIndex = int32_t(v * 3 + i);
+						int32_t vertexIndex = int32_t(v + i);
 						index.m_position = basePositionIndex + vertexIndex;
 						index.m_normal   = hasNormal   ? baseNormalIndex   + vertexIndex : -1;
 						index.m_texcoord = hasTexcoord ? baseTexcoordIndex + vertexIndex : -1;
 						index.m_vbc      = _hasBc      ? i                               :  0;
 						triangle.m_index[i] = index;
+						if (!tangents.empty())
+						{
+							triangle.m_hasTangents = true;
+							bx::memCopy(triangle.m_tangents[i], tangents[vertexIndex].value, 4 * sizeof(float));
+						}
+					}
+					if (nodeDeterminant < 0.0f)
+					{
+						bx::swap(triangle.m_index[1], triangle.m_index[2]);
+						for (uint32_t jj = 0; jj < 4; ++jj) { bx::swap(triangle.m_tangents[1][jj], triangle.m_tangents[2][jj]); }
 					}
 					_mesh->m_triangles.push_back(triangle);
 				}
@@ -1029,6 +1015,7 @@ void parseGltf(char* _data, uint32_t _size, Mesh* _mesh, bool _hasBc, const bx::
 
 		if (result == cgltf_result_success)
 		{
+			_mesh->m_gltfMaterials = data->materials;
 			for (cgltf_size sceneIndex = 0; sceneIndex < data->scenes_count; ++sceneIndex)
 			{
 				cgltf_scene* scene = &data->scenes[sceneIndex];
@@ -1048,6 +1035,7 @@ void parseGltf(char* _data, uint32_t _size, Mesh* _mesh, bool _hasBc, const bx::
 
 static const bx::CommandLineOption s_options[] =
 {
+	{ '\0', "config",      1, "<file>", "Frost mesh import description." },
 	{ '\0', "guid",        1, "<guid>",      "Persistent asset GUID (required). Reuse it when rebuilding." },
 	{ 'h',  "help",        0, NULL,          "Display this help and exit."                                 },
 	{ 'v',  "version",     0, NULL,          "Output version information and exit."                        },
@@ -1145,10 +1133,39 @@ int main(int _argc, const char* _argv[])
 		return bx::kExitFailure;
 	}
 
+	frost::DefaultAllocator importAllocator;
+	frost::Settings settings(&importAllocator);
+	frost::FilePath sourcePath;
+	const char* configPath = cmdLine.findOption("config");
+	if (NULL != configPath)
+	{
+		frost::FileReader configReader;
+		frost::Error configError;
+		if (!frost::open(&configReader, configPath, &configError)) { help("Unable to open import description."); return 1; }
+		settings.read(&configReader, &configError);
+		frost::close(&configReader);
+		const frost::StringView source = settings.get("source");
+		if (!configError.isOk() || source.isEmpty()) { help("Import description requires a source."); return 1; }
+		sourcePath.set(frost::FilePath(configPath).getPath());
+		sourcePath.join(source);
+	}
+	const auto importBool = [&](const char* _key, bool _default)
+	{
+		const frost::StringView value = settings.get(_key);
+		if (!value.isEmpty() && !frost::fromString(&_default, value)) { help("Invalid boolean import setting."); exit(1); }
+		return _default;
+	};
+	const auto importUint = [&](const char* _key, uint32_t _default)
+	{
+		const frost::StringView value = settings.get(_key);
+		if (!value.isEmpty() && !frost::fromString(&_default, value)) { help("Invalid integer import setting."); exit(1); }
+		return _default;
+	};
+
 	int32_t positional = 1;
 
 	const char* filePath = cmdLine.findOption('f');
-	filePath = NULL != filePath ? filePath : cmdLine.getPositional(positional++);
+	filePath = NULL != filePath ? filePath : (NULL != configPath ? sourcePath.getCPtr() : cmdLine.getPositional(positional++));
 	if (NULL == filePath)
 	{
 		help("Input file name must be specified.");
@@ -1164,14 +1181,16 @@ int main(int _argc, const char* _argv[])
 	}
 
 	frost::Guid guid;
-	const char* guidArg = cmdLine.findOption("guid");
-	if (NULL == guidArg || !frost::fromString(&guid, guidArg) || !frost::isValid(guid) )
+	const char* guidOption = cmdLine.findOption("guid");
+	const frost::StringView guidArg = NULL != guidOption ? frost::StringView(guidOption) : settings.get("guid");
+	if (!frost::fromString(&guid, guidArg) || !frost::isValid(guid) )
 	{
 		help("A valid persistent --guid must be specified.");
 		return bx::kExitFailure;
 	}
 
 	float scale = 1.0f;
+	if (!settings.get("scale").isEmpty() && !frost::fromString(&scale, settings.get("scale"))) { help("Invalid scale."); return 1; }
 	const char* scaleArg = cmdLine.findOption('s', "scale");
 	if (NULL != scaleArg)
 	{
@@ -1181,30 +1200,34 @@ int main(int _argc, const char* _argv[])
 		}
 	}
 
-	bool compress = cmdLine.hasArg('c', "compress");
+	bool compress = cmdLine.hasArg('c', "compress") || importBool("compress", false);
 
 	cmdLine.hasArg(s_obbSteps, '\0', "obb");
 	s_obbSteps = bx::min(bx::max(s_obbSteps, 1), 90);
 
-	uint32_t packNormal = 0;
+	uint32_t packNormal = importUint("packNormal", 0);
 	cmdLine.hasArg(packNormal, '\0', "packnormal");
 
-	uint32_t packUv = 0;
+	uint32_t packUv = importUint("packUv", 0);
 	cmdLine.hasArg(packUv, '\0', "packuv");
 
-	bool ccw = cmdLine.hasArg("ccw");
-	bool flipV = cmdLine.hasArg("flipv");
-	bool hasTangent = cmdLine.hasArg("tangent");
+	bool ccw = cmdLine.hasArg("ccw") || importBool("ccw", false);
+	bool flipV = cmdLine.hasArg("flipv") || importBool("flipV", false);
+	bool hasTangent = cmdLine.hasArg("tangent") || importBool("tangent", false);
 	bool hasBc = cmdLine.hasArg("barycentric");
 
+	if (!bx::isFinite(scale) || scale <= 0.0f || packNormal > 1 || packUv > 1) { help("Invalid scale or vertex packing."); return 1; }
+	const frost::StringView coordinateSystem = settings.get("coordinateSystem");
+	bool validCoordinateSystem = coordinateSystem.isEmpty();
 	CoordinateSystem outputCoordinateSystem;
 	outputCoordinateSystem.m_handedness = bx::Handedness::Left;
 	outputCoordinateSystem.m_forward = Axis::PositiveZ;
 	outputCoordinateSystem.m_up = Axis::PositiveY;
 	for (uint32_t ii = 0; ii < BX_COUNTOF(s_coordinateSystemMappings); ++ii)
 	{
-		if (cmdLine.hasArg(s_coordinateSystemMappings[ii].m_param) )
+		if (cmdLine.hasArg(s_coordinateSystemMappings[ii].m_param) || 0 == frost::strCmp(coordinateSystem, s_coordinateSystemMappings[ii].m_param))
 		{
+			validCoordinateSystem = true;
 			outputCoordinateSystem = s_coordinateSystemMappings[ii].m_coordinateSystem;
 		}
 	}
@@ -1247,6 +1270,7 @@ int main(int _argc, const char* _argv[])
 	parseElapsed += now;
 	int64_t convertElapsed = -now;
 
+	if (!validCoordinateSystem) { help("Unknown coordinateSystem."); return 1; }
 	std::sort(mesh.m_groups.begin(), mesh.m_groups.end(), GroupSortByMaterial() );
 
 	bool changeWinding = ccw;
@@ -1279,6 +1303,16 @@ int main(int _argc, const char* _argv[])
 			changeWinding = !changeWinding;
 		}
 
+		for (TriIndices& triangle : mesh.m_triangles)
+		{
+			if (!triangle.m_hasTangents) { continue; }
+			for (uint32_t ii = 0; ii < 3; ++ii)
+			{
+				bx::store(triangle.m_tangents[ii], bx::normalize(bx::mul(bx::load<bx::Vec3>(triangle.m_tangents[ii]), transform)));
+				triangle.m_tangents[ii][3] *= mtxDeterminant(transform) < 0.0f ? -1.0f : 1.0f;
+				if (flipV) { triangle.m_tangents[ii][3] = -triangle.m_tangents[ii][3]; }
+			}
+		}
 		float identity[16];
 		bx::mtxIdentity(identity);
 
@@ -1323,10 +1357,12 @@ int main(int _argc, const char* _argv[])
 			for (TriangleArray::iterator it = mesh.m_triangles.begin(), itEnd = mesh.m_triangles.end(); it != itEnd; ++it)
 			{
 				bx::swap(it->m_index[1], it->m_index[2]);
+				for (uint32_t jj = 0; jj < 4; ++jj) { bx::swap(it->m_tangents[1][jj], it->m_tangents[2][jj]); }
 			}
 		}
 	}
 
+	if (flipV) { for (bx::Vec3& uv : mesh.m_texcoords) { uv.y = 1.0f - uv.y; } }
 	if (hasTangent)
 	{
 		for (const TriIndices& triangle : mesh.m_triangles)
@@ -1345,6 +1381,7 @@ int main(int _argc, const char* _argv[])
 		}
 	}
 
+	if (hasTangent) { generateTangents(mesh); }
 	bgfx::VertexLayout layout;
 	layout.begin();
 	layout.add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float);
@@ -1430,7 +1467,35 @@ int main(int _argc, const char* _argv[])
 		exit(bx::kExitFailure);
 	}
 
+	struct MaterialSlot { stl::string name; uint32_t dependency = UINT32_MAX; };
+	stl::vector<MaterialSlot> materialSlots;
+	stl::vector<frost::AssetDependency> dependencies;
+	for (const Group& group : mesh.m_groups)
+	{
+		bool found = false;
+		for (const MaterialSlot& slot : materialSlots) { found |= slot.name == group.m_material; }
+		if (found) { continue; }
+		MaterialSlot slot;
+		slot.name = group.m_material;
+		char key[1024];
+		bx::snprintf(key, sizeof(key), "materials/%s", 0 == slot.name.size() ? "default" : slot.name.c_str());
+		const frost::StringView value = settings.get(key);
+		if (!value.isEmpty())
+		{
+			frost::Guid materialGuid;
+			if (!frost::fromString(&materialGuid, value) || !frost::isValid(materialGuid)) { help("Invalid material GUID in import description."); return 1; }
+			uint32_t index = 0;
+			while (index < dependencies.size() && dependencies[index].guid != materialGuid) { ++index; }
+			if (index == dependencies.size()) { dependencies.push_back({ materialGuid, frost::kAssetTypeMaterial }); }
+			slot.dependency = index;
+		}
+		materialSlots.push_back(slot);
+	}
+	if (materialSlots.empty() || materialSlots.size() > UINT16_MAX || dependencies.size() > UINT16_MAX)
+	{ help("Invalid material slot count."); return 1; }
 	frost::AssetHeader header;
+	header.dependencyCount = uint32_t(dependencies.size());
+	header.payloadOffset = frost::kAssetHeaderSize + header.dependencyCount * frost::kAssetDependencySize;
 	header.type = frost::kAssetTypeMesh;
 	header.payloadVersion = frost::kMeshVersion;
 	header.guid = guid;
@@ -1438,7 +1503,20 @@ int main(int _argc, const char* _argv[])
 	frost::writeAssetHeader(headerBytes, sizeof(headerBytes), header, frost::ErrorAssert{});
 	bx::Error err;
 	bx::write(&writer, headerBytes, sizeof(headerBytes), &err);
+	for (const frost::AssetDependency& dependency : dependencies)
+	{
+		frost::writeAssetDependency(headerBytes, sizeof(headerBytes), dependency, frost::ErrorAssert{});
+		bx::write(&writer, headerBytes, frost::kAssetDependencySize, &err);
+	}
 	bx::writeLE(&writer, uint32_t(0), &err); // Group count, patched after compilation.
+	bx::writeLE(&writer, uint16_t(materialSlots.size()), &err);
+	for (const MaterialSlot& slot : materialSlots)
+	{
+		if (slot.name.size() > UINT16_MAX) { help("Material slot name is too long."); return 1; }
+		bx::writeLE(&writer, uint16_t(slot.name.size()), &err);
+		bx::write(&writer, slot.name.c_str(), uint32_t(slot.name.size()), &err);
+		bx::writeLE(&writer, slot.dependency, &err);
+	}
 	uint32_t numGroups = 0;
 
 	Primitive prim;
@@ -1472,10 +1550,6 @@ int main(int _argc, const char* _argv[])
 					primitives.push_back(prim);
 				}
 
-				if (hasTangent)
-				{
-					calcTangents(vertexData, uint16_t(numVertices), layout, indexData, numIndices);
-				}
 
 				triReorderElapsed -= bx::getHPCounter();
 
@@ -1492,6 +1566,8 @@ int main(int _argc, const char* _argv[])
 				if (0 < numVertices
 				&&  0 < numIndices)
 				{
+					uint16_t materialSlot = 0;
+					while (materialSlots[materialSlot].name != material) { ++materialSlot; }
 					++numGroups;
 					write(&writer
 						, vertexData
@@ -1500,7 +1576,7 @@ int main(int _argc, const char* _argv[])
 						, indexData
 						, numIndices
 						, compress
-						, material
+						, materialSlot
 						, primitives
 						, &err
 						);
@@ -1559,10 +1635,6 @@ int main(int _argc, const char* _argv[])
 					float uv[2];
 					bx::memCopy(uv, &mesh.m_texcoords[index.m_texcoord == -1 ? 0 : index.m_texcoord], 2*sizeof(float) );
 
-					if (flipV)
-					{
-						uv[1] = -uv[1];
-					}
 
 					bgfx::vertexPack(uv, true, bgfx::Attrib::TexCoord0, layout, vertices);
 				}
@@ -1575,6 +1647,7 @@ int main(int _argc, const char* _argv[])
 					bgfx::vertexPack(normal, true, bgfx::Attrib::Normal, layout, vertices);
 				}
 
+				if (hasTangent) { bgfx::vertexPack(triangle.m_tangents[edge], true, bgfx::Attrib::Tangent, layout, vertices); }
 				uint32_t hash = bx::hash<bx::HashMurmur2A>(vertices, stride);
 				size_t bucket = hash & hashmod;
 				uint32_t vertexIndex = UINT32_MAX;
@@ -1636,10 +1709,11 @@ int main(int _argc, const char* _argv[])
 	{
 		BX_ERROR_SET(&err, bx::kErrorReaderWriterWrite, "Mesh is empty or exceeds the asset size limit.");
 	}
-	header.payloadSize = uint32_t(outputSize - frost::kAssetHeaderSize);
+	header.payloadSize = uint32_t(outputSize - header.payloadOffset);
 	frost::writeAssetHeader(headerBytes, sizeof(headerBytes), header, frost::ErrorAssert{});
 	bx::seek(&writer, 0, bx::Whence::Begin);
 	bx::write(&writer, headerBytes, sizeof(headerBytes), &err);
+	bx::seek(&writer, header.payloadOffset, bx::Whence::Begin);
 	bx::writeLE(&writer, numGroups, &err);
 	bx::printf("size: %d\n", uint32_t(outputSize) );
 	bx::close(&writer);

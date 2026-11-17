@@ -26,9 +26,11 @@ namespace frost
 			, current(_other.current), editing(_other.editing), editingTarget(_other.editingTarget)
 			, frameTime(_other.frameTime), fps(_other.fps), frames(_other.frames), entities(_other.entities)
 			, dimensions(_other.dimensions), focus(_other.focus)
+			, debugView(_other.debugView)
 			, count(_other.count), rowCount(_other.rowCount), original(_other.original)
 			, repeatAt(_other.repeatAt), repeatDirection(_other.repeatDirection)
 		{
+			memCopy(graphicsStats, _other.graphicsStats, sizeof(graphicsStats));
 			entries = frost::move(_other.entries);
 			rows = frost::move(_other.rows);
 		}
@@ -36,6 +38,7 @@ namespace frost
 		Entity canvas, panel, title, separator, list;
 		Entity current, editing, editingTarget;
 		Entity frameTime, fps, frames, entities, dimensions, focus;
+		Entity debugView, graphicsStats[10];
 		DynamicStorageT<DevmenuEntry> entries;
 		DynamicStorageT<Entity> rows;
 		uint32_t count = 0, rowCount = 0;
@@ -161,10 +164,6 @@ namespace frost
 				devmenuComponent<&SkyComponent::turbidity>({}));
 			devmenuValue(_world, sky, "Sun intensity", DevmenuFloatComponent{ 0, 0, 100, 0.1, 2 }, 5,
 				devmenuComponent<&SkyComponent::sunIntensity>({}));
-			devmenuValue(_world, sky, "Exposure", DevmenuFloatComponent{ 0, 0, 10, 0.01, 2 }, 6,
-				devmenuComponent<&SkyComponent::exposure>({}));
-			devmenuValue(_world, sky, "Prevent banding", DevmenuBoolComponent{}, 7,
-				devmenuComponent<&SkyComponent::preventBanding>({}));
 
 			const Entity light = devmenuFolder(_world, _menu->graphics, "Directional light", 1);
 			_world.insert(light, DevmenuTargetComponent{ DevmenuTargetComponent::Light });
@@ -177,6 +176,26 @@ namespace frost
 				devmenuComponent<&CameraComponent::fov>({}));
 			devmenuValue(_world, camera, "Ortho height", DevmenuFloatComponent{ 0, 0.1, 1000, 0.5, 1 }, 1,
 				devmenuComponent<&CameraComponent::orthographicHeight>({}));
+			devmenuValue(_world, camera, "Exposure (stops)", DevmenuFloatComponent{ 0, -20, 20, 0.25, 2 }, 2,
+				devmenuComponent<&CameraComponent::exposure>({}));
+
+			const Entity output = devmenuFolder(_world, _menu->graphics, "Output", 3);
+			devmenuValue(_world, output, "Prevent banding", DevmenuBoolComponent{}, 0,
+				devmenuResource<&GraphicsResource::preventBanding>());
+			devmenuValue(_world, output, "Debug view (0-6)", DevmenuIntComponent{ 0, 0, GraphicsDebugView::Count - 1, 1 }, 1,
+				devmenuResource<&GraphicsResource::debugView>());
+			_state->debugView = devmenuReadout(_world, output, "View", 2);
+			devmenuValue(_world, output, "Depth range", DevmenuFloatComponent{ 0, 0.1, 10000, 10, 1 }, 3,
+				devmenuResource<&GraphicsResource::debugDepth>());
+			devmenuValue(_world, output, "GPU profiling", DevmenuBoolComponent{}, 4,
+				devmenuResource<&GraphicsResource::gpuProfiling>());
+			const Entity statistics = devmenuFolder(_world, _menu->graphics, "Statistics", 4);
+			const char* labels[] = { "GPU (ms)", "Geometry (ms)", "Lighting (ms)", "Sky (ms)",
+				"Tone map (ms)", "Debug (ms)", "UI (ms)", "Draw calls", "Textures", "Targets (MiB)" };
+			for (uint32_t ii = 0; ii < FROST_COUNTOF(labels); ++ii)
+			{
+				_state->graphicsStats[ii] = devmenuReadout(_world, statistics, labels[ii], int32_t(ii));
+			}
 
 			_state->canvas = _world.spawn(UiCanvasComponent{ _menu->scale, 1000, _menu->visible }).id();
 			_state->panel = _world.spawn(UiNodeComponent{}, UiLayoutComponent{ UiLayoutComponent::Column, 6, 2 },
@@ -204,6 +223,30 @@ namespace frost
 			snprintf(buffer, sizeof(buffer), "%u x %u", _display.width, _display.height);
 			devmenuSetReadout(_world, _state.dimensions, buffer);
 			devmenuSetReadout(_world, _state.focus, _input.focused ? "Yes" : "No");
+			if (const GraphicsResource* graphics = _world.getResource<GraphicsResource>())
+			{
+				const char* views[] = { "Scene", "Base color", "World normals", "Device depth",
+					"Linear depth", "World position", "HDR luminance",
+					"Metallic", "Roughness", "Occlusion", "Emissive" };
+				devmenuSetReadout(_world, _state.debugView, views[clamp(int32_t(graphics->debugView), 0, int32_t(FROST_COUNTOF(views) - 1))]);
+			}
+			if (const GraphicsStatsResource* stats = _world.getResource<GraphicsStatsResource>())
+			{
+				const double times[] = { stats->gpuMs, stats->geometryMs, stats->lightMs, stats->skyMs,
+					stats->toneMapMs, stats->debugViewMs, stats->uiMs };
+				for (uint32_t ii = 0; ii < FROST_COUNTOF(times); ++ii)
+				{
+					if (times[ii] >= 0) { snprintf(buffer, sizeof(buffer), "%.3f", times[ii]); }
+					else { snprintf(buffer, sizeof(buffer), "Unavailable"); }
+					devmenuSetReadout(_world, _state.graphicsStats[ii], buffer);
+				}
+				snprintf(buffer, sizeof(buffer), "%u", stats->draws);
+				devmenuSetReadout(_world, _state.graphicsStats[7], buffer);
+				snprintf(buffer, sizeof(buffer), "%u", stats->textures);
+				devmenuSetReadout(_world, _state.graphicsStats[8], buffer);
+				snprintf(buffer, sizeof(buffer), "%.2f", double(stats->renderTargetBytes) / (1024 * 1024));
+				devmenuSetReadout(_world, _state.graphicsStats[9], buffer);
+			}
 
 			// The first sky/light by entity ID and the explicitly active camera.
 			Entity targets[3];

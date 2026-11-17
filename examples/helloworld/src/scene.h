@@ -6,122 +6,129 @@
 #ifndef FROST_EXAMPLE_HELLOWORLD_SCENE_H_HEADER_GUARD
 #define FROST_EXAMPLE_HELLOWORLD_SCENE_H_HEADER_GUARD
 
-// Engine
 #include <frost/ecs.h>
 #include <frost/file.h>
 #include <frost/os.h>
-
-// Engine Plugins
 #include <graphics.h>
 
 namespace
 {
 	struct SceneResource
 	{
-		// Assets
 		frost::MeshHandle mesh;
+		frost::MeshHandle orb;
+		frost::TextureHandle textures[4];
+		frost::MaterialHandle materials[17];
+		frost::MaterialHandle gridBindings[12][2];
 
-		// Instances
 		enum Enum
 		{
-			Player,
-			Floor,
-			Box1,
-			Box2,
-			Box3,
-			Sky,
-
-			Count
+			Player, Floor, Box1, Box2, Box3, Sky,
+			GridBegin,
+			Count = GridBegin + 12
 		};
-		frost::Entity instances[SceneResource::Count];
+		frost::Entity instances[Count];
 	};
 
 	struct SceneSystem
 	{
-		static void startup(frost::World& _world, frost::ResMutT<frost::ActiveCameraResource> _activeCamera, frost::ResMutT<SceneResource> _scene)
+		static const frost::Memory* readAsset(frost::World& _world, const char* _path, frost::Error* _err)
 		{
-			// Load and create assets
-			frost::Error err;
 			frost::FileReader reader;
-			const frost::Memory* mem = NULL;
-			if (frost::open(&reader, "cube.mesh", &err) )
-			{
-				const int64_t size = frost::getSize(&reader);
-				if (0 < size && INT32_MAX >= size)
-				{
-					mem = frost::allocMemory(_world.getAllocator(), uint32_t(size) );
-					if (NULL != mem)
-					{
-						frost::read(&reader, mem->data, int32_t(size), &err);
-					}
-				}
-				frost::close(&reader);
-			}
+			if (!frost::open(&reader, _path, _err)) { return NULL; }
+			const int64_t size = frost::getSize(&reader);
+			const frost::Memory* mem = 0 < size && size <= INT32_MAX
+				? frost::allocMemory(_world.getAllocator(), uint32_t(size)) : NULL;
+			if (NULL != mem) { frost::read(&reader, mem->data, int32_t(size), _err); }
+			frost::close(&reader);
+			return mem;
+		}
 
-			_scene->mesh = frost::createMesh(mem, &err);
-			if (!frost::isValid(_scene->mesh) )
+		static void startup(frost::World& _world, frost::ResMutT<frost::ActiveCameraResource> _activeCamera,
+			frost::ResMutT<SceneResource> _scene)
+		{
+			frost::Error err;
+			const char* textures[] = { "stone-color.bin", "stone-normal.bin", "parameters.bin", "mask.bin" };
+			for (uint32_t ii = 0; ii < FROST_COUNTOF(textures); ++ii)
 			{
-				const frost::StringLiteral message = err.getMessage();
-				frost::debugPrintf("Unable to load cube.mesh: %.*s\n", message.getLength(), message.getCPtr());
+				_scene->textures[ii] = frost::createTexture(readAsset(_world, textures[ii], &err), &err);
+			}
+			const char* materials[] = { "stone.bin", "metal.bin", "masked.bin", "emissive.bin", "floor.bin" };
+			// Explicitly resolved in each material's dependency-table order.
+			_scene->materials[0] = frost::createMaterial(readAsset(_world, materials[0], &err), _scene->textures, 3, &err);
+			_scene->materials[1] = frost::createMaterial(readAsset(_world, materials[1], &err), NULL, 0, &err);
+			_scene->materials[2] = frost::createMaterial(readAsset(_world, materials[2], &err), &_scene->textures[3], 1, &err);
+			_scene->materials[3] = frost::createMaterial(readAsset(_world, materials[3], &err), &_scene->textures[0], 1, &err);
+			_scene->materials[4] = frost::createMaterial(readAsset(_world, materials[4], &err), NULL, 0, &err);
+			_scene->mesh = frost::createMesh(readAsset(_world, "cube.bin", &err), &err);
+			_scene->orb = frost::createMesh(readAsset(_world, "orb.bin", &err), _scene->materials, 2, &err);
+			if (!err.isOk())
+			{
+				frost::debugPrintf("Unable to load scene assets: %s\n", err.getMessage().getCPtr());
 				frost::exit(frost::kExitFailure, false);
 			}
 
-			// Create floor
-			{
-				frost::TransformComponent transform;
-					transform.scale = { 100.0f, 1.0f, 100.0f };
-				_scene->instances[SceneResource::Floor] = _world.spawn(frost::MeshComponent{ _scene->mesh }, transform).id();
-			}
+			frost::TransformComponent transform;
+			transform.position = { 0.0f, -1.1f, 0.0f };
+			transform.scale = { 100.0f, 1.0f, 100.0f };
+			_scene->instances[SceneResource::Floor] = _world.spawn(
+				frost::MeshComponent{ _scene->mesh, &_scene->materials[4], 1 }, transform).id();
 
-			// Create boxes
-			{
-				frost::TransformComponent transform;
-				transform.position = { -3.0f, 2.0f, 0.0f };
-				transform.rotation = frost::rotateY(frost::toRad(20.0f));
-				transform.scale = { 1.0f, 1.0f, 1.0f };
-				_scene->instances[SceneResource::Box1] = _world.spawn(frost::MeshComponent{ _scene->mesh }, transform).id();
-			}
-			{
-				frost::TransformComponent transform;
-				transform.position = { 0.0f, 3.0f, 2.5f };
-				transform.rotation = frost::rotateY(frost::toRad(-25.0f));
-				transform.scale = { 0.75f, 2.0f, 0.75f };
-				_scene->instances[SceneResource::Box2] = _world.spawn(frost::MeshComponent{ _scene->mesh }, transform).id();
-			}
-			{
-				frost::TransformComponent transform;
-				transform.scale = { 1.5f, 0.5f, 0.75f };
-				transform.rotation = frost::mul(frost::rotateY(frost::toRad(35.0f)), frost::rotateZ(frost::toRad(25.0f)));
-				transform.position = { 3.0f, 1.0f + transform.scale.x * frost::sin(frost::toRad(25.0f)) + transform.scale.y * frost::cos(frost::toRad(25.0f)), 0.0f };
-				_scene->instances[SceneResource::Box3] = _world.spawn(frost::MeshComponent{ _scene->mesh }, transform).id();
-			}
+			// The imported orb keeps two distinct default material bindings.
+			transform = {};
+			transform.position = { -3.5f, 0.0f, -2.0f };
+			transform.scale = { 1.5f, 1.5f, 1.5f };
+			_scene->instances[SceneResource::Box1] = _world.spawn(frost::MeshComponent{ _scene->orb }, transform).id();
+			transform.position = { 0.0f, 1.0f, -2.0f };
+			transform.scale = { 1.5f, 1.0f, 0.1f };
+			_scene->instances[SceneResource::Box2] = _world.spawn(
+				frost::MeshComponent{ _scene->mesh, &_scene->materials[2], 1 }, transform).id();
+			transform.position = { 3.5f, 0.75f, -2.0f };
+			transform.scale = { 1.0f, 1.0f, 1.0f };
+			_scene->instances[SceneResource::Box3] = _world.spawn(
+				frost::MeshComponent{ _scene->mesh, &_scene->materials[3], 1 }, transform).id();
 
-			// Create sky
+			// Lower row: dielectric. Upper row: metal. Roughness increases left to right.
+			for (uint32_t row = 0; row < 2; ++row)
 			{
-				frost::SkyComponent sky;
-				sky.hps = 0.5f;
-				_scene->instances[SceneResource::Sky] = _world.spawn(sky, frost::DirectionalLightComponent{}).id();
+				for (uint32_t column = 0; column < 6; ++column)
+				{
+					const uint32_t index = row * 6 + column;
+					frost::MaterialDesc material;
+					material.baseColor[0] = 0.8f;
+					material.baseColor[1] = 0.3f;
+					material.baseColor[2] = 0.08f;
+					material.metallic = float(row);
+					material.roughness = 0.05f + float(column) * 0.18f;
+					_scene->materials[5 + index] = frost::createMaterial(material, &err);
+					_scene->gridBindings[index][0] = _scene->materials[5 + index];
+					_scene->gridBindings[index][1] = _scene->materials[5 + index];
+					transform.position = { -5.0f + float(column) * 2.0f, 2.4f + float(row) * 2.0f, 2.0f };
+					transform.scale = { 1.0f, 1.0f, 1.0f };
+					_scene->instances[SceneResource::GridBegin + index] = _world.spawn(
+						frost::MeshComponent{ _scene->orb, _scene->gridBindings[index], 2 }, transform).id();
+				}
 			}
+			if (!err.isOk()) { frost::debugPrintf("Unable to create material grid.\n"); frost::exit(frost::kExitFailure, false); }
 
-			// Create the player and orbit its transform.
-			{
-				frost::TransformComponent transform;
-				transform.position = { 0.0f, 3.0f, 0.0f };
-				frost::CameraComponent camera;
-				CameraComponent controller;
-				CameraSystem::reset(camera, controller, &transform);
-				const frost::Entity player = _world.spawn(transform, camera, controller).id();
-				_world.getMut<CameraComponent>(player)->target = player;
-				_scene->instances[SceneResource::Player] = player;
-			}
-
-			// Active camera on player entity TODO: Figure out a better way for this?
-			_activeCamera->entity = _scene->instances[SceneResource::Player];
+			frost::SkyComponent sky;
+			sky.time = 10.0f;
+			_scene->instances[SceneResource::Sky] = _world.spawn(sky, frost::DirectionalLightComponent{}).id();
+			transform = {};
+			transform.position = { 0.0f, 2.8f, 0.0f };
+			frost::CameraComponent camera;
+			camera.fov = 50.0f;
+			CameraComponent controller;
+			controller.distance = 12.0f;
+			CameraSystem::reset(camera, controller, &transform);
+			const frost::Entity player = _world.spawn(transform, camera, controller).id();
+			_world.getMut<CameraComponent>(player)->target = player;
+			_scene->instances[SceneResource::Player] = player;
+			_activeCamera->entity = player;
 		}
 
 		static void update(frost::QueryT<const frost::SkyComponent&, frost::DirectionalLightComponent&> _suns)
 		{
-			// This scene chooses to use the sky's sun as a directional light.
 			_suns.each([](const frost::SkyComponent& _sky, frost::DirectionalLightComponent& _light)
 			{
 				_light.direction = _sky.sunDirection;
@@ -131,15 +138,14 @@ namespace
 
 		static void shutdown(frost::World& _world, frost::ResMutT<SceneResource> _scene)
 		{
-			for (uint32_t ii = 0; ii < SceneResource::Count; ++ii)
-			{
-				_world.despawn(_scene->instances[ii]);
-			}
-
+			for (frost::Entity entity : _scene->instances) { _world.despawn(entity); }
+			frost::release(_scene->orb);
 			frost::release(_scene->mesh);
+			for (frost::MaterialHandle material : _scene->materials) { frost::release(material); }
+			for (frost::TextureHandle texture : _scene->textures) { frost::release(texture); }
 		}
 	};
 
-}
+} // namespace
 
 #endif // FROST_EXAMPLE_HELLOWORLD_SCENE_H_HEADER_GUARD

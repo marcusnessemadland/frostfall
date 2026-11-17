@@ -1,0 +1,10 @@
+guid = 06ad64d2-48ab-4c8a-932d-000000000103
+baseColor = 1 1 1 1
+metallic = 0
+roughness = 0.8
+alphaMode = mask
+alphaCutoff = 0.5
+doubleSided = true
+[baseColor]
+texture = 06ad64d2-48ab-4c8a-932d-000000000004
+filter = anisotropic

@@ -1,4 +1,5 @@
 # 3rdparty bgfx
+cmake_dependent_option(FROST_BUILD_TOOLS_MATERIALC "Build graphics material compiler." ON "FROST_BUILD_TOOLS;NOT CMAKE_CROSSCOMPILING" OFF)
 cmake_dependent_option(FROST_BUILD_TOOLS_SHADERC "Build graphics shader compiler." ON "FROST_BUILD_TOOLS;NOT CMAKE_CROSSCOMPILING" OFF)
 cmake_dependent_option(FROST_BUILD_TOOLS_TEXTUREC "Build graphics texture compiler." ON "FROST_BUILD_TOOLS;NOT CMAKE_CROSSCOMPILING" OFF)
 cmake_dependent_option(FROST_BUILD_TOOLS_MESHC "Build graphics mesh compiler." ON "FROST_BUILD_TOOLS;NOT CMAKE_CROSSCOMPILING" OFF)
@@ -56,6 +57,7 @@ target_link_libraries(graphics
 		device # Depends on device plugin
 	PRIVATE
 		bgfx
+		bimg
 		bx
 )
 

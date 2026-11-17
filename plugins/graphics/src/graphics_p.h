@@ -6,8 +6,12 @@
 #ifndef BX_PLUGIN_GRAPHICS_P_H_HEADER_GUARD
 #define BX_PLUGIN_GRAPHICS_P_H_HEADER_GUARD
 
+#include <graphics.h>
+#include <device.h>
 #include <bgfx/bgfx.h>
 #include <bgfx/embedded_shader.h>
+#include <bimg/bimg.h>
+#include <bx/error.h>
 
 #include <charset.h> // bgfx's built-in bitmap font, retained with its upstream license.
 
@@ -82,6 +86,337 @@ namespace frost
 /// Asset system
 namespace frost
 {
+	struct TextureRef
+	{
+		Guid guid;
+		bgfx::TextureHandle texture = BGFX_INVALID_HANDLE;
+		bgfx::TextureInfo info = {};
+		uint32_t refCount = 0;
+		bool srgb = false;
+	};
+
+	struct TextureContext
+	{
+		AllocatorI* allocator;
+		HandleAlloc* handles;
+		TextureRef* refs;
+		bgfx::TextureHandle white = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle normal = BGFX_INVALID_HANDLE;
+	};
+
+	static TextureContext* s_textureContext = NULL;
+
+	static TextureRef* getTextureRef(TextureHandle _handle)
+	{
+		return NULL != s_textureContext
+			&& _handle.idx < s_textureContext->handles->getMaxHandles()
+			&& s_textureContext->handles->isValid(_handle.idx)
+			? &s_textureContext->refs[_handle.idx] : NULL;
+	}
+
+	void addRef(TextureHandle _handle)
+	{
+		TextureRef* texture = getTextureRef(_handle);
+		FROST_ASSERT(NULL != texture && UINT32_MAX != texture->refCount, "Cannot retain an invalid or overflowing texture reference.");
+		++texture->refCount;
+	}
+
+	void release(TextureHandle _handle)
+	{
+		if (!isValid(_handle)) { return; }
+		TextureRef* texture = getTextureRef(_handle);
+		FROST_ASSERT(NULL != texture && 0 != texture->refCount, "Cannot release an invalid texture reference.");
+		if (0 == --texture->refCount)
+		{
+			bgfx::destroy(texture->texture);
+			*texture = TextureRef{};
+			s_textureContext->handles->free(_handle.idx);
+		}
+	}
+
+	static TextureHandle textureCreate(const Memory* _mem, Error* _err)
+	{
+		TextureHandle handle;
+		if (!_err->isOk()) { return handle; }
+		if (NULL == s_textureContext)
+		{
+			FROST_ERROR_SET(_err, kErrorTextureCreate, "Texture creation requires graphics startup.");
+			return handle;
+		}
+		AssetHeader header;
+		if (!readAssetHeader(_mem, &header, _err)) { return handle; }
+		if (kAssetTypeTexture != header.type || kTextureVersion != header.payloadVersion || 0 != header.dependencyCount)
+		{
+			FROST_ERROR_SET(_err, kErrorTextureFormat, "Texture asset type, version, or dependencies are unsupported.");
+			return handle;
+		}
+		MemoryReader reader((const uint8_t*)_mem->data + header.payloadOffset, header.payloadSize);
+		uint32_t flags = 0;
+		readHE(&reader, flags, true, _err);
+		if (!_err->isOk() || 0 != (flags & ~uint32_t(TextureAssetFlags::Srgb)))
+		{
+			FROST_ERROR_SET(_err, kErrorTextureFormat, "Texture flags are invalid.");
+			return handle;
+		}
+		const uint8_t* data = (const uint8_t*)_mem->data + header.payloadOffset + 4;
+		const uint32_t size = header.payloadSize - 4;
+		const bool srgb = 0 != (flags & TextureAssetFlags::Srgb);
+		bimg::ImageContainer image = {};
+		bx::Error imageError;
+		if (size < 128 || 0 != memCmp(data, "DDS ", 4)
+			|| !bimg::imageParse(image, data, size, &imageError)
+			|| 0 == image.m_width || 0 == image.m_height || UINT16_MAX < image.m_width || UINT16_MAX < image.m_height
+			|| image.m_cubeMap || 1 != image.m_numLayers || 1 < image.m_depth
+			|| !bgfx::isTextureValid(0, false, 1, bgfx::TextureFormat::Enum(image.m_format), srgb ? BGFX_TEXTURE_SRGB : 0))
+		{
+			FROST_ERROR_SET(_err, kErrorTextureFormat, "Texture requires a supported 2D DDS image.");
+			return handle;
+		}
+		// Validate every mip before handing the container to the backend.
+		for (uint8_t ii = 0; ii < image.m_numMips; ++ii)
+		{
+			bimg::ImageMip mip;
+			if (!bimg::imageGetRawData(image, 0, ii, data, size, mip))
+			{
+				FROST_ERROR_SET(_err, kErrorTextureFormat, "Texture mip data is truncated.");
+				return handle;
+			}
+		}
+		handle.idx = s_textureContext->handles->alloc();
+		if (!isValid(handle))
+		{
+			FROST_ERROR_SET(_err, kErrorTextureCreate, "Texture handle capacity has been reached.");
+			return handle;
+		}
+		TextureRef texture;
+		texture.guid = header.guid;
+		texture.srgb = srgb;
+		texture.texture = bgfx::createTexture(bgfx::copy(data, size), srgb ? BGFX_TEXTURE_SRGB : 0, 0, &texture.info);
+		if (!bgfx::isValid(texture.texture))
+		{
+			s_textureContext->handles->free(handle.idx);
+			FROST_ERROR_SET(_err, kErrorTextureCreate, "Unable to create the texture.");
+			return TextureHandle{};
+		}
+		texture.refCount = 1;
+		s_textureContext->refs[handle.idx] = texture;
+		return handle;
+	}
+
+	TextureHandle createTexture(const Memory* _mem, Error* _err)
+	{
+		FROST_ERROR_SCOPE(_err);
+		const TextureHandle handle = textureCreate(_mem, _err);
+		release(_mem);
+		return handle;
+	}
+
+	struct MaterialRef
+	{
+		Guid guid;
+		MaterialDesc desc;
+		uint32_t refCount = 0;
+	};
+
+	struct MaterialContext
+	{
+		AllocatorI* allocator;
+		HandleAlloc* handles;
+		MaterialRef* refs;
+	};
+
+	static MaterialContext* s_materialContext = NULL;
+
+	static MaterialRef* getMaterialRef(MaterialHandle _handle)
+	{
+		return NULL != s_materialContext
+			&& _handle.idx < s_materialContext->handles->getMaxHandles()
+			&& s_materialContext->handles->isValid(_handle.idx)
+			? &s_materialContext->refs[_handle.idx] : NULL;
+	}
+
+	static bool validateMaterial(const MaterialDesc& _desc, Error* _err)
+	{
+		for (float value : _desc.baseColor)
+		{
+			if (!isFinite(value) || value < 0.0f || value > 1.0f)
+			{
+				FROST_ERROR_SET(_err, kErrorMaterialFormat, "Base color factors must be in [0, 1].");
+				return false;
+			}
+		}
+		const float positive[] = { _desc.emissive.x, _desc.emissive.y, _desc.emissive.z, _desc.emissiveStrength, _desc.normalScale };
+		for (float value : positive)
+		{
+			if (!isFinite(value) || value < 0.0f)
+			{
+				FROST_ERROR_SET(_err, kErrorMaterialFormat, "Emissive and normal factors must be finite and nonnegative.");
+				return false;
+			}
+		}
+		const float unit[] = { _desc.metallic, _desc.roughness, _desc.occlusionStrength, _desc.alphaCutoff };
+		for (float value : unit)
+		{
+			if (!isFinite(value) || value < 0.0f || value > 1.0f)
+			{
+				FROST_ERROR_SET(_err, kErrorMaterialFormat, "Material parameters must be in [0, 1].");
+				return false;
+			}
+		}
+		if (0 != (_desc.flags & ~uint32_t(MaterialFlags::Masked | MaterialFlags::DoubleSided)))
+		{
+			FROST_ERROR_SET(_err, kErrorMaterialFormat, "Material flags are unsupported.");
+			return false;
+		}
+		for (uint32_t ii = 0; ii < MaterialTexture::Count; ++ii)
+		{
+			const uint32_t sampler = _desc.samplers[ii];
+			if (0 != (sampler & ~0x3fu) || (0 != (sampler & TextureSampler::ClampU) && 0 != (sampler & TextureSampler::MirrorU))
+				|| (0 != (sampler & TextureSampler::ClampV) && 0 != (sampler & TextureSampler::MirrorV))
+				|| (0 != (sampler & TextureSampler::Point) && 0 != (sampler & TextureSampler::Anisotropic)))
+			{
+				FROST_ERROR_SET(_err, kErrorMaterialFormat, "Material sampler flags are invalid.");
+				return false;
+			}
+			if (!isValid(_desc.textures[ii])) { continue; }
+			const TextureRef* texture = getTextureRef(_desc.textures[ii]);
+			const bool color = MaterialTexture::BaseColor == ii || MaterialTexture::Emissive == ii;
+			if (NULL == texture || (!color && texture->srgb))
+			{
+				FROST_ERROR_SET(_err, kErrorMaterialFormat, "Material requires live textures; normal and parameter textures must be linear.");
+				return false;
+			}
+		}
+		return true;
+	}
+
+	MaterialHandle createMaterial(const MaterialDesc& _desc, Error* _err)
+	{
+		FROST_ERROR_SCOPE(_err);
+		MaterialHandle handle;
+		if (!_err->isOk()) { return handle; }
+		if (NULL == s_materialContext)
+		{
+			FROST_ERROR_SET(_err, kErrorMaterialCreate, "Material creation requires graphics startup.");
+			return handle;
+		}
+		if (!validateMaterial(_desc, _err)) { return handle; }
+		handle.idx = s_materialContext->handles->alloc();
+		if (!isValid(handle))
+		{
+			FROST_ERROR_SET(_err, kErrorMaterialCreate, "Material handle capacity has been reached.");
+			return handle;
+		}
+		MaterialRef& material = s_materialContext->refs[handle.idx];
+		material.desc = _desc;
+		material.refCount = 1;
+		for (TextureHandle texture : _desc.textures)
+		{
+			if (isValid(texture)) { addRef(texture); }
+		}
+		return handle;
+	}
+
+	static float readAssetFloat(MemoryReader& _reader, Error* _err)
+	{
+		uint32_t bits = 0;
+		readHE(&_reader, bits, true, _err);
+		float value;
+		memCopy(&value, &bits, sizeof(value));
+		return value;
+	}
+
+	static MaterialHandle materialCreate(const Memory* _mem, const TextureHandle* _textures, uint16_t _numTextures, Error* _err)
+	{
+		MaterialHandle handle;
+		if (!_err->isOk()) { return handle; }
+		AssetHeader header;
+		if (!readAssetHeader(_mem, &header, _err)) { return handle; }
+		if (kAssetTypeMaterial != header.type || kMaterialVersion != header.payloadVersion || kMaterialPayloadSize != header.payloadSize
+			|| _numTextures != header.dependencyCount || (0 != _numTextures && NULL == _textures))
+		{
+			FROST_ERROR_SET(_err, kErrorMaterialFormat, "Material asset type, version, payload, or dependency count is invalid.");
+			return handle;
+		}
+		for (uint16_t ii = 0; ii < _numTextures; ++ii)
+		{
+			AssetDependency dependency;
+			if (!readAssetDependency(_mem, ii, &dependency, _err)) { return handle; }
+			const TextureRef* texture = getTextureRef(_textures[ii]);
+			if (kAssetTypeTexture != dependency.type || NULL == texture || texture->guid != dependency.guid)
+			{
+				FROST_ERROR_SET(_err, kErrorMaterialFormat, "Resolved material texture does not match its dependency GUID.");
+				return handle;
+			}
+		}
+		MemoryReader reader((const uint8_t*)_mem->data + header.payloadOffset, header.payloadSize);
+		MaterialDesc desc;
+		for (float& value : desc.baseColor) { value = readAssetFloat(reader, _err); }
+		desc.emissive.x = readAssetFloat(reader, _err);
+		desc.emissive.y = readAssetFloat(reader, _err);
+		desc.emissive.z = readAssetFloat(reader, _err);
+		desc.emissiveStrength = readAssetFloat(reader, _err);
+		desc.metallic = readAssetFloat(reader, _err);
+		desc.roughness = readAssetFloat(reader, _err);
+		desc.normalScale = readAssetFloat(reader, _err);
+		desc.occlusionStrength = readAssetFloat(reader, _err);
+		readHE(&reader, desc.flags, true, _err);
+		desc.alphaCutoff = readAssetFloat(reader, _err);
+		for (uint32_t ii = 0; ii < MaterialTexture::Count; ++ii)
+		{
+			uint32_t index = UINT32_MAX;
+			readHE(&reader, index, true, _err);
+			readHE(&reader, desc.samplers[ii], true, _err);
+			if (UINT32_MAX == index) { continue; }
+			if (index >= _numTextures)
+			{
+				FROST_ERROR_SET(_err, kErrorMaterialFormat, "Material texture dependency index is invalid.");
+				return handle;
+			}
+			desc.textures[ii] = _textures[index];
+		}
+		handle = createMaterial(desc, _err);
+		if (isValid(handle)) { getMaterialRef(handle)->guid = header.guid; }
+		return handle;
+	}
+
+	MaterialHandle createMaterial(const Memory* _mem, const TextureHandle* _textures, uint16_t _numTextures, Error* _err)
+	{
+		FROST_ERROR_SCOPE(_err);
+		const MaterialHandle handle = materialCreate(_mem, _textures, _numTextures, _err);
+		release(_mem);
+		return handle;
+	}
+
+	void addRef(MaterialHandle _handle)
+	{
+		MaterialRef* material = getMaterialRef(_handle);
+		FROST_ASSERT(NULL != material && UINT32_MAX != material->refCount, "Cannot retain an invalid or overflowing material reference.");
+		++material->refCount;
+	}
+
+	static void destroyMaterial(MaterialRef& _material)
+	{
+		for (TextureHandle texture : _material.desc.textures)
+		{
+			if (isValid(texture)) { release(texture); }
+		}
+		_material = MaterialRef{};
+	}
+
+	void release(MaterialHandle _handle)
+	{
+		if (!isValid(_handle)) { return; }
+		MaterialRef* material = getMaterialRef(_handle);
+		FROST_ASSERT(NULL != material && 0 != material->refCount, "Cannot release an invalid material reference.");
+		if (0 == --material->refCount)
+		{
+			destroyMaterial(*material);
+			s_materialContext->handles->free(_handle.idx);
+		}
+	}
+
+
 	struct MeshBounds
 	{
 		Sphere sphere;
@@ -106,17 +441,24 @@ namespace frost
 		bgfx::VertexLayout       layout;
 		MeshBounds               bounds;
 		MeshPrimitive*           primitives = NULL;
-		char*                    material = NULL;
 		uint32_t                 numVertices = 0;
 		uint32_t                 numIndices = 0;
 		uint16_t                 numPrimitives = 0;
 		uint16_t                 materialSlot = 0;
 	};
 
+	struct MeshMaterialSlot
+	{
+		char* name = NULL;
+		MaterialHandle material;
+	};
+
 	struct MeshRef
 	{
 		Guid       guid;
 		MeshGroup* groups = NULL;
+		MeshMaterialSlot* materials = NULL;
+		uint16_t numMaterials = 0;
 		uint32_t   numGroups = 0;
 		uint32_t   refCount = 0;
 	};
@@ -141,7 +483,7 @@ namespace frost
 	static void destroyMesh(MeshRef& _mesh)
 	{
 		AllocatorI* allocator = s_meshContext->allocator;
-		for (uint32_t ii = 0; ii < _mesh.numGroups; ++ii)
+		for (uint32_t ii = 0; NULL != _mesh.groups && ii < _mesh.numGroups; ++ii)
 		{
 			MeshGroup& group = _mesh.groups[ii];
 			if (bgfx::isValid(group.vertexBuffer) )
@@ -160,9 +502,14 @@ namespace frost
 			}
 
 			free(allocator, group.primitives);
-			free(allocator, group.material);
 		}
 
+		for (uint16_t ii = 0; ii < _mesh.numMaterials; ++ii)
+		{
+			free(allocator, _mesh.materials[ii].name);
+			release(_mesh.materials[ii].material);
+		}
+		free(allocator, _mesh.materials);
 		free(allocator, _mesh.groups);
 		_mesh = MeshRef{};
 	}
@@ -468,7 +815,7 @@ namespace frost
 			return false;
 		}
 
-		_group.material = readMeshString(_reader, _err);
+		readHE(&_reader, _group.materialSlot, true, _err);
 		readHE(&_reader, _group.numPrimitives, true, _err);
 		if (!_err->isOk() || 0 == _group.numPrimitives || uint32_t(_group.numPrimitives) * 122 > _reader.remaining() )
 		{
@@ -590,7 +937,7 @@ namespace frost
 		return true;
 	}
 
-	static MeshHandle meshCreate(const Memory* _mem, Error* _err)
+	static MeshHandle meshCreate(const Memory* _mem, const MaterialHandle* _materials, uint16_t _numMaterials, Error* _err)
 	{
 		MeshHandle handle;
 		if (!_err->isOk())
@@ -609,7 +956,8 @@ namespace frost
 		{
 			return handle;
 		}
-		if (kAssetTypeMesh != header.type || kMeshVersion != header.payloadVersion || 0 != header.dependencyCount)
+		if (kAssetTypeMesh != header.type || kMeshVersion != header.payloadVersion
+			|| header.dependencyCount != _numMaterials || (0 != _numMaterials && NULL == _materials))
 		{
 			FROST_ERROR_SET(_err, kErrorMeshFormat, "Mesh asset type, version, or dependencies are unsupported.");
 			return handle;
@@ -628,10 +976,66 @@ namespace frost
 			return handle;
 		}
 
+		for (uint16_t ii = 0; ii < _numMaterials; ++ii)
+		{
+			AssetDependency dependency;
+			if (!readAssetDependency(_mem, ii, &dependency, _err)) { return handle; }
+			const MaterialRef* material = getMaterialRef(_materials[ii]);
+			if (kAssetTypeMaterial != dependency.type || NULL == material || material->guid != dependency.guid)
+			{
+				FROST_ERROR_SET(_err, kErrorMeshFormat, "Resolved mesh material does not match its dependency GUID.");
+				return handle;
+			}
+		}
+		uint16_t numSlots = 0;
+		readHE(&reader, numSlots, true, _err);
+		if (!_err->isOk() || 0 == numSlots || numSlots > reader.remaining() / 6)
+		{
+			FROST_ERROR_SET(_err, kErrorMeshFormat, "Mesh material slot count is invalid.");
+			return handle;
+		}
+		mesh.materials = (MeshMaterialSlot*)alloc(s_meshContext->allocator, sizeof(MeshMaterialSlot) * numSlots);
+		if (NULL == mesh.materials)
+		{
+			FROST_ERROR_SET(_err, kErrorMeshCreate, "Unable to allocate mesh material slots.");
+			return handle;
+		}
+		for (uint16_t ii = 0; ii < numSlots; ++ii) { FROST_PLACEMENT_NEW(&mesh.materials[ii], MeshMaterialSlot)(); }
+		mesh.numMaterials = numSlots;
+		for (uint16_t ii = 0; ii < numSlots && _err->isOk(); ++ii)
+		{
+			MeshMaterialSlot& slot = mesh.materials[ii];
+			slot.name = readMeshString(reader, _err);
+			uint32_t index = UINT32_MAX;
+			readHE(&reader, index, true, _err);
+			if (!_err->isOk()) { break; }
+			if (UINT32_MAX != index)
+			{
+				if (index >= _numMaterials)
+				{
+					FROST_ERROR_SET(_err, kErrorMeshFormat, "Mesh material dependency index is invalid.");
+					break;
+				}
+				slot.material = _materials[index];
+				addRef(slot.material);
+			}
+			for (uint16_t jj = 0; jj < ii; ++jj)
+			{
+				if (0 == strCmp(slot.name, mesh.materials[jj].name))
+				{
+					FROST_ERROR_SET(_err, kErrorMeshFormat, "Mesh contains duplicate material slot names.");
+					break;
+				}
+			}
+		}
+		if (!_err->isOk()) { destroyMesh(mesh); return handle; }
+
 		mesh.groups = (MeshGroup*)alloc(s_meshContext->allocator, sizeof(MeshGroup) * mesh.numGroups);
 
 		if (NULL == mesh.groups)
 		{
+			mesh.numGroups = 0;
+			destroyMesh(mesh);
 			FROST_ERROR_SET(_err, kErrorMeshCreate, "Unable to allocate mesh groups.");
 			return handle;
 		}
@@ -641,26 +1045,13 @@ namespace frost
 			FROST_PLACEMENT_NEW(&mesh.groups[ii], MeshGroup)();
 		}
 
-		uint16_t numMaterialSlots = 0;
 		for (uint32_t ii = 0; ii < mesh.numGroups && _err->isOk(); ++ii)
 		{
 			MeshGroup& group = mesh.groups[ii];
-			if (!readMeshGroup(reader, group, _err) )
+			if (!readMeshGroup(reader, group, _err)) { break; }
+			if (group.materialSlot >= mesh.numMaterials)
 			{
-				break;
-			}
-			group.materialSlot = numMaterialSlots;
-			for (uint32_t jj = 0; jj < ii; ++jj)
-			{
-				if (0 == strCmp(group.material, mesh.groups[jj].material) )
-				{
-					group.materialSlot = mesh.groups[jj].materialSlot;
-					break;
-				}
-			}
-			if (group.materialSlot == numMaterialSlots)
-			{
-				++numMaterialSlots;
+				FROST_ERROR_SET(_err, kErrorMeshFormat, "Mesh group material slot is invalid.");
 			}
 		}
 
@@ -692,9 +1083,29 @@ namespace frost
 	MeshHandle createMesh(const Memory* _mem, Error* _err)
 	{
 		FROST_ERROR_SCOPE(_err);
-		const MeshHandle handle = meshCreate(_mem, _err);
+		const MeshHandle handle = meshCreate(_mem, NULL, 0, _err);
 		release(_mem);
 		return handle;
+	}
+
+	MeshHandle createMesh(const Memory* _mem, const MaterialHandle* _materials, uint16_t _numMaterials, Error* _err)
+	{
+		FROST_ERROR_SCOPE(_err);
+		const MeshHandle handle = meshCreate(_mem, _materials, _numMaterials, _err);
+		release(_mem);
+		return handle;
+	}
+
+	uint16_t getMeshMaterialCount(MeshHandle _handle)
+	{
+		const MeshRef* mesh = getMeshRef(_handle);
+		return NULL != mesh ? mesh->numMaterials : 0;
+	}
+
+	StringView getMeshMaterialName(MeshHandle _handle, uint16_t _slot)
+	{
+		const MeshRef* mesh = getMeshRef(_handle);
+		return NULL != mesh && _slot < mesh->numMaterials ? StringView(mesh->materials[_slot].name) : StringView();
 	}
 
 	void addRef(MeshHandle _handle)
@@ -718,6 +1129,95 @@ namespace frost
 			s_meshContext->handles->free(_handle.idx);
 		}
 	}
+
+	struct TextureSystem
+	{
+		static void startup(World& _world, ResT<GraphicsResource> _graphics)
+		{
+			FROST_ASSERT(NULL == s_textureContext && 0 < _graphics->maxTextures, "Graphics requires one texture context with nonzero capacity.");
+
+			AllocatorI* allocator = _world.getAllocator();
+			TextureContext* context = (TextureContext*)alloc(allocator, sizeof(TextureContext) );
+			TextureRef* refs = (TextureRef*)alloc(allocator, sizeof(TextureRef) * _graphics->maxTextures);
+
+			void* handles = alloc(allocator, sizeof(HandleAlloc) + 2 * _graphics->maxTextures * sizeof(uint16_t) );
+			FROST_ASSERT(NULL != context && NULL != refs && NULL != handles, "Failed to allocate texture storage.");
+
+			context->allocator = allocator;
+			context->handles = FROST_PLACEMENT_NEW(handles, HandleAlloc)(_graphics->maxTextures);
+			context->refs = refs;
+
+			for (uint16_t ii = 0; ii < _graphics->maxTextures; ++ii)
+			{
+				FROST_PLACEMENT_NEW(&refs[ii], TextureRef)();
+			}
+			const uint32_t white = UINT32_C(0xffffffff);
+			const uint8_t normal[] = { 128, 128, 255, 255 };
+			context->white = bgfx::createTexture2D(1, 1, false, 1, bgfx::TextureFormat::RGBA8, 0, bgfx::copy(&white, sizeof(white)));
+			context->normal = bgfx::createTexture2D(1, 1, false, 1, bgfx::TextureFormat::RGBA8, 0, bgfx::copy(normal, sizeof(normal)));
+			FROST_ASSERT(bgfx::isValid(context->white) && bgfx::isValid(context->normal), "Failed to create fallback textures.");
+			s_textureContext = context;
+		}
+
+		static void shutdown()
+		{
+			while (0 != s_textureContext->handles->getNumHandles() )
+			{
+				const uint16_t idx = s_textureContext->handles->getHandleAt(0);
+				bgfx::destroy(s_textureContext->refs[idx].texture);
+				s_textureContext->handles->free(idx);
+			}
+
+			bgfx::destroy(s_textureContext->white);
+			bgfx::destroy(s_textureContext->normal);
+			AllocatorI* allocator = s_textureContext->allocator;
+			destroyHandleAlloc(allocator, s_textureContext->handles);
+			free(allocator, s_textureContext->refs);
+			free(allocator, s_textureContext);
+			s_textureContext = NULL;
+		}
+	};
+
+	struct MaterialSystem
+	{
+		static void startup(World& _world, ResT<GraphicsResource> _graphics)
+		{
+			FROST_ASSERT(NULL == s_materialContext && 0 < _graphics->maxMaterials, "Graphics requires one material context with nonzero capacity.");
+
+			AllocatorI* allocator = _world.getAllocator();
+			MaterialContext* context = (MaterialContext*)alloc(allocator, sizeof(MaterialContext) );
+			MaterialRef* refs = (MaterialRef*)alloc(allocator, sizeof(MaterialRef) * _graphics->maxMaterials);
+
+			void* handles = alloc(allocator, sizeof(HandleAlloc) + 2 * _graphics->maxMaterials * sizeof(uint16_t) );
+			FROST_ASSERT(NULL != context && NULL != refs && NULL != handles, "Failed to allocate material storage.");
+
+			context->allocator = allocator;
+			context->handles = FROST_PLACEMENT_NEW(handles, HandleAlloc)(_graphics->maxMaterials);
+			context->refs = refs;
+
+			for (uint16_t ii = 0; ii < _graphics->maxMaterials; ++ii)
+			{
+				FROST_PLACEMENT_NEW(&refs[ii], MaterialRef)();
+			}
+			s_materialContext = context;
+		}
+
+		static void shutdown()
+		{
+			while (0 != s_materialContext->handles->getNumHandles() )
+			{
+				const uint16_t idx = s_materialContext->handles->getHandleAt(0);
+				destroyMaterial(s_materialContext->refs[idx]);
+				s_materialContext->handles->free(idx);
+			}
+
+			AllocatorI* allocator = s_materialContext->allocator;
+			destroyHandleAlloc(allocator, s_materialContext->handles);
+			free(allocator, s_materialContext->refs);
+			free(allocator, s_materialContext);
+			s_materialContext = NULL;
+		}
+	};
 
 	struct MeshSystem
 	{
@@ -779,8 +1279,9 @@ namespace frost
 	constexpr bgfx::ViewId kRenderPassGeometry = 0;
 	constexpr bgfx::ViewId kRenderPassLight = 1;
 	constexpr bgfx::ViewId kRenderPassSky = 2;
-	constexpr bgfx::ViewId kRenderPassCombine = 3;
-	constexpr bgfx::ViewId kRenderPassUi = 4;
+	constexpr bgfx::ViewId kRenderPassToneMap = 3;
+	constexpr bgfx::ViewId kRenderPassDebug = 4;
+	constexpr bgfx::ViewId kRenderPassUi = 5;
 
 	static const bgfx::EmbeddedShader s_embeddedShaders[] =
 	{
@@ -808,6 +1309,10 @@ namespace frost
 		float view[16] = {};
 		float projection[16] = {};
 		float screenProjection[16] = {};
+		float inverseViewProjection[16] = {};
+		float exposure = 1.0f;
+		float cameraPosition[4] = {};
+		float cameraDirection[4] = {};
 	};
 
 	struct RenderFrameSystem
@@ -827,6 +1332,16 @@ namespace frost
 				_frame->view, _frame->projection);
 			if (_frame->active)
 			{
+				float viewProjection[16];
+				mtxMul(viewProjection, _frame->view, _frame->projection);
+				mtxInverse(_frame->inverseViewProjection, viewProjection);
+				_cameras.get(_activeCamera->entity, [&](const CameraComponent& _camera)
+				{
+					store(_frame->cameraPosition, _camera.position);
+					_frame->cameraPosition[3] = CameraProjection::Orthographic == _camera.projection ? 1.0f : 0.0f;
+					store(_frame->cameraDirection, toZAxis(normalize(_camera.rotation)));
+					_frame->exposure = exp2(isFinite(_camera.exposure) ? clamp(_camera.exposure, -20.0f, 20.0f) : 0.0f);
+				});
 				mtxOrtho(_frame->screenProjection, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 100.0f,
 					0.0f, bgfx::getCaps()->homogeneousDepth);
 			}
@@ -837,7 +1352,14 @@ namespace frost
 	{
 		bgfx::ProgramHandle program = BGFX_INVALID_HANDLE;
 		bgfx::FrameBufferHandle frameBuffer = BGFX_INVALID_HANDLE;
-		bgfx::TextureHandle textures[3] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+		// Base color, normal/coverage, depth, metallic/roughness/AO, HDR emissive.
+		bgfx::TextureHandle textures[5] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE,
+			BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+		bgfx::UniformHandle samplers[MaterialTexture::Count];
+		bgfx::UniformHandle u_materialBaseColor = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle u_materialParameters = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle u_materialEmissive = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle u_materialFlags = BGFX_INVALID_HANDLE;
 		uint32_t width = 0;
 		uint32_t height = 0;
 	};
@@ -855,33 +1377,89 @@ namespace frost
 
 			FROST_ASSERT(bgfx::isValid(_gbuffer->program), "Failed to create the geometry program.");
 
+			const char* samplers[] = { "s_baseColorMap", "s_normalMap", "s_metallicRoughnessMap", "s_occlusionMap", "s_emissiveMap" };
+			for (uint32_t ii = 0; ii < MaterialTexture::Count; ++ii)
+			{
+				_gbuffer->samplers[ii] = bgfx::createUniform(samplers[ii], bgfx::UniformType::Sampler);
+			}
+			_gbuffer->u_materialBaseColor = bgfx::createUniform("u_materialBaseColor", bgfx::UniformType::Vec4);
+			_gbuffer->u_materialParameters = bgfx::createUniform("u_materialParameters", bgfx::UniformType::Vec4);
+			_gbuffer->u_materialEmissive = bgfx::createUniform("u_materialEmissive", bgfx::UniformType::Vec4);
+			_gbuffer->u_materialFlags = bgfx::createUniform("u_materialFlags", bgfx::UniformType::Vec4);
 			bgfx::setPaletteColor(0, UINT32_C(0x00000000));
 			bgfx::setPaletteColor(1, UINT32_C(0xffffffff));
 		}
 
-		static void resize(GBufferResource& _gbuffer, uint16_t _width, uint16_t _height)
+		static void destroyTargets(GBufferResource& _gbuffer)
 		{
 			if (bgfx::isValid(_gbuffer.frameBuffer))
 			{
 				bgfx::destroy(_gbuffer.frameBuffer);
+				_gbuffer.frameBuffer = BGFX_INVALID_HANDLE;
 			}
+			for (bgfx::TextureHandle& texture : _gbuffer.textures)
+			{
+				if (bgfx::isValid(texture)) { bgfx::destroy(texture); }
+				texture = BGFX_INVALID_HANDLE;
+			}
+			_gbuffer.width = _gbuffer.height = 0;
+		}
 
+		static void resize(GBufferResource& _gbuffer, uint16_t _width, uint16_t _height)
+		{
+			destroyTargets(_gbuffer);
 			const uint64_t flags = BGFX_TEXTURE_RT | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT
 				| BGFX_SAMPLER_MIP_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP;
 
 			const bgfx::TextureFormat::Enum depthFormat =
 				bgfx::isTextureValid(0, false, 1, bgfx::TextureFormat::D32F, flags)
 				? bgfx::TextureFormat::D32F : bgfx::TextureFormat::D24;
+			FROST_ASSERT(bgfx::getCaps()->limits.maxFBAttachments >= 4
+				&& bgfx::isTextureValid(0, false, 1, bgfx::TextureFormat::BGRA8, flags)
+				&& bgfx::isTextureValid(0, false, 1, bgfx::TextureFormat::RGBA16F, flags)
+				&& bgfx::isTextureValid(0, false, 1, depthFormat, flags), "Required G-buffer formats are unsupported.");
 
 			_gbuffer.textures[0] = bgfx::createTexture2D(_width, _height, false, 1, bgfx::TextureFormat::BGRA8, flags);
 			_gbuffer.textures[1] = bgfx::createTexture2D(_width, _height, false, 1, bgfx::TextureFormat::BGRA8, flags);
 			_gbuffer.textures[2] = bgfx::createTexture2D(_width, _height, false, 1, depthFormat, flags);
 
-			_gbuffer.frameBuffer = bgfx::createFrameBuffer(3, _gbuffer.textures, true);
+			_gbuffer.textures[3] = bgfx::createTexture2D(_width, _height, false, 1, bgfx::TextureFormat::BGRA8, flags);
+			_gbuffer.textures[4] = bgfx::createTexture2D(_width, _height, false, 1, bgfx::TextureFormat::RGBA16F, flags);
+
+			// Textures are owned here; framebuffers retain their attachments.
+			_gbuffer.frameBuffer = bgfx::createFrameBuffer(5, _gbuffer.textures, false);
 			FROST_ASSERT(bgfx::isValid(_gbuffer.frameBuffer), "Failed to create the G-buffer.");
 
 			_gbuffer.width = _width;
 			_gbuffer.height = _height;
+		}
+
+		static void bindMaterial(const MaterialDesc& _material, const GBufferResource& _gbuffer)
+		{
+			for (uint8_t ii = 0; ii < MaterialTexture::Count; ++ii)
+			{
+				const TextureRef* texture = getTextureRef(_material.textures[ii]);
+				FROST_ASSERT(!isValid(_material.textures[ii]) || NULL != texture, "Material must reference live textures.");
+				const bgfx::TextureHandle fallback = MaterialTexture::Normal == ii ? s_textureContext->normal : s_textureContext->white;
+				const uint32_t flags = _material.samplers[ii];
+				uint32_t sampler = 0;
+				if (0 != (flags & TextureSampler::ClampU)) { sampler |= BGFX_SAMPLER_U_CLAMP; }
+				if (0 != (flags & TextureSampler::ClampV)) { sampler |= BGFX_SAMPLER_V_CLAMP; }
+				if (0 != (flags & TextureSampler::MirrorU)) { sampler |= BGFX_SAMPLER_U_MIRROR; }
+				if (0 != (flags & TextureSampler::MirrorV)) { sampler |= BGFX_SAMPLER_V_MIRROR; }
+				if (0 != (flags & TextureSampler::Point)) { sampler |= BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_MIP_POINT; }
+				if (0 != (flags & TextureSampler::Anisotropic)) { sampler |= BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC; }
+				bgfx::setTexture(ii, _gbuffer.samplers[ii], NULL != texture ? texture->texture : fallback, sampler);
+			}
+			const float parameters[] = { _material.metallic, _material.roughness, _material.normalScale, _material.occlusionStrength };
+			const float emissive[] = { _material.emissive.x * _material.emissiveStrength,
+				_material.emissive.y * _material.emissiveStrength, _material.emissive.z * _material.emissiveStrength, _material.alphaCutoff };
+			const float flags[] = { 0 != (_material.flags & MaterialFlags::Masked) ? 1.0f : 0.0f,
+				0 != (_material.flags & MaterialFlags::DoubleSided) ? 1.0f : 0.0f, 0.0f, 0.0f };
+			bgfx::setUniform(_gbuffer.u_materialBaseColor, _material.baseColor);
+			bgfx::setUniform(_gbuffer.u_materialParameters, parameters);
+			bgfx::setUniform(_gbuffer.u_materialEmissive, emissive);
+			bgfx::setUniform(_gbuffer.u_materialFlags, flags);
 		}
 
 		static void update(ResT<RenderFrame> _frame,
@@ -898,7 +1476,7 @@ namespace frost
 
 			bgfx::setViewRect(kRenderPassGeometry, 0, 0, _frame->width, _frame->height);
 			bgfx::setViewFrameBuffer(kRenderPassGeometry, _gbuffer->frameBuffer);
-			bgfx::setViewClear(kRenderPassGeometry, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 1.0f, 0, 1, 0);
+			bgfx::setViewClear(kRenderPassGeometry, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 1.0f, 0, 0, 0, 0, 0);
 			bgfx::setViewTransform(kRenderPassGeometry, _frame->view, _frame->projection);
 			bgfx::touch(kRenderPassGeometry);
 
@@ -930,13 +1508,27 @@ namespace frost
 				for (uint32_t ii = 0; ii < mesh->numGroups; ++ii)
 				{
 					const MeshGroup& group = mesh->groups[ii];
+					MaterialHandle materialHandle = mesh->materials[group.materialSlot].material;
+					if (group.materialSlot < _mesh.numMaterials && NULL != _mesh.materials && isValid(_mesh.materials[group.materialSlot]))
+					{
+						materialHandle = _mesh.materials[group.materialSlot];
+					}
+					const MaterialRef* material = getMaterialRef(materialHandle);
+					FROST_ASSERT(!isValid(materialHandle) || NULL != material, "Mesh must reference live materials.");
+					const MaterialDesc fallback;
+					const MaterialDesc& desc = NULL != material ? material->desc : fallback;
+					uint64_t state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS;
+					const Vec3 scale = NULL != _transform ? _transform->scale : Vec3{ 1.0f, 1.0f, 1.0f };
+					if (scale.x * scale.y * scale.z < 0.0f) { state |= BGFX_STATE_FRONT_CCW; }
+					if (0 == (desc.flags & MaterialFlags::DoubleSided)) { state |= BGFX_STATE_CULL_CCW; }
 					for (uint16_t jj = 0; jj < group.numPrimitives; ++jj)
 					{
 						const MeshPrimitive& primitive = group.primitives[jj];
 						bgfx::setTransform(mtx);
 						bgfx::setVertexBuffer(0, group.vertexBuffer);
 						bgfx::setIndexBuffer(group.indexBuffer, primitive.startIndex, primitive.numIndices);
-						bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
+						bindMaterial(desc, *_gbuffer);
+						bgfx::setState(state);
 						bgfx::submit(kRenderPassGeometry, _gbuffer->program);
 					}
 				}
@@ -945,11 +1537,13 @@ namespace frost
 
 		static void shutdown(ResMutT<GBufferResource> _gbuffer)
 		{
-			if (bgfx::isValid(_gbuffer->frameBuffer))
-			{
-				bgfx::destroy(_gbuffer->frameBuffer);
-			}
+			destroyTargets(*_gbuffer);
 			bgfx::destroy(_gbuffer->program);
+			for (bgfx::UniformHandle sampler : _gbuffer->samplers) { bgfx::destroy(sampler); }
+			bgfx::destroy(_gbuffer->u_materialBaseColor);
+			bgfx::destroy(_gbuffer->u_materialParameters);
+			bgfx::destroy(_gbuffer->u_materialEmissive);
+			bgfx::destroy(_gbuffer->u_materialFlags);
 		}
 	};
 
@@ -962,13 +1556,21 @@ namespace frost
 	{
 		bgfx::ProgramHandle program = BGFX_INVALID_HANDLE;
 		bgfx::UniformHandle s_normal = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle s_albedo = BGFX_INVALID_HANDLE;
 		bgfx::UniformHandle u_sunDirection = BGFX_INVALID_HANDLE;
 		bgfx::UniformHandle u_sunLuminance = BGFX_INVALID_HANDLE;
 		bgfx::VertexLayout layout;
 		bgfx::FrameBufferHandle frameBuffer = BGFX_INVALID_HANDLE;
 		bgfx::TextureHandle texture = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle depth = BGFX_INVALID_HANDLE; // Borrowed from the G-buffer.
 		uint32_t width = 0;
 		uint32_t height = 0;
+		bgfx::UniformHandle s_material = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle s_emissive = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle s_depth = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle u_invSceneViewProj = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle u_sceneCamera = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle u_sceneDirection = BGFX_INVALID_HANDLE;
 	};
 
 	struct LightSystem
@@ -976,6 +1578,7 @@ namespace frost
 		static void startup(ResMutT<LightResource> _light)
 		{
 			bgfx::setViewName(kRenderPassLight, "Directional Light");
+			bgfx::setViewMode(kRenderPassLight, bgfx::ViewMode::Sequential);
 
 			const bgfx::RendererType::Enum type = bgfx::getRendererType();
 			_light->program = bgfx::createProgram(
@@ -985,6 +1588,13 @@ namespace frost
 			FROST_ASSERT(bgfx::isValid(_light->program), "Failed to create the lighting program.");
 
 			_light->s_normal = bgfx::createUniform("s_normal", bgfx::UniformType::Sampler);
+			_light->s_albedo = bgfx::createUniform("s_albedo", bgfx::UniformType::Sampler);
+			_light->s_material = bgfx::createUniform("s_material", bgfx::UniformType::Sampler);
+			_light->s_emissive = bgfx::createUniform("s_emissive", bgfx::UniformType::Sampler);
+			_light->s_depth = bgfx::createUniform("s_depth", bgfx::UniformType::Sampler);
+			_light->u_invSceneViewProj = bgfx::createUniform("u_invSceneViewProj", bgfx::UniformType::Mat4);
+			_light->u_sceneCamera = bgfx::createUniform("u_sceneCamera", bgfx::UniformType::Vec4);
+			_light->u_sceneDirection = bgfx::createUniform("u_sceneDirection", bgfx::UniformType::Vec4);
 			_light->u_sunDirection = bgfx::createUniform("u_sunDirection", bgfx::UniformType::Vec4);
 			_light->u_sunLuminance = bgfx::createUniform("u_sunLuminance", bgfx::UniformType::Vec4);
 
@@ -992,15 +1602,26 @@ namespace frost
 				.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float).end();
 		}
 
-		static void resize(LightResource& _light, const GBufferResource& _gbuffer)
+		static void destroyTargets(LightResource& _light)
 		{
 			if (bgfx::isValid(_light.frameBuffer))
 			{
 				bgfx::destroy(_light.frameBuffer);
+				_light.frameBuffer = BGFX_INVALID_HANDLE;
 			}
+			if (bgfx::isValid(_light.texture)) { bgfx::destroy(_light.texture); }
+			_light.texture = BGFX_INVALID_HANDLE;
+			_light.depth = BGFX_INVALID_HANDLE;
+			_light.width = _light.height = 0;
+		}
 
+		static void resize(LightResource& _light, const GBufferResource& _gbuffer)
+		{
+			destroyTargets(_light);
 			const uint64_t flags = BGFX_TEXTURE_RT | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT
 				| BGFX_SAMPLER_MIP_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP;
+			FROST_ASSERT(bgfx::isTextureValid(0, false, 1, bgfx::TextureFormat::RGBA16F, flags),
+				"RGBA16F scene rendering is unsupported.");
 
 			_light.texture = bgfx::createTexture2D(uint16_t(_gbuffer.width), uint16_t(_gbuffer.height),
 				false, 1, bgfx::TextureFormat::RGBA16F, flags);
@@ -1009,11 +1630,25 @@ namespace frost
 			attachments[0].init(_light.texture);
 			attachments[1].init(_gbuffer.textures[2], bgfx::Access::Read, 0, 1, 0, BGFX_ATTACHMENT_READ_ONLY_DEPTH);
 
-			_light.frameBuffer = bgfx::createFrameBuffer(2, attachments, true);
+			// Own scene color, retain shared depth through the framebuffer only.
+			_light.frameBuffer = bgfx::createFrameBuffer(2, attachments, false);
 
 			FROST_ASSERT(bgfx::isValid(_light.frameBuffer), "Failed to create the lighting framebuffer.");
 			_light.width = _gbuffer.width;
 			_light.height = _gbuffer.height;
+			_light.depth = _gbuffer.textures[2];
+		}
+
+		static void bindScene(const RenderFrame& _frame, const GBufferResource& _gbuffer, const LightResource& _light)
+		{
+			bgfx::setTexture(0, _light.s_normal, _gbuffer.textures[1]);
+			bgfx::setTexture(1, _light.s_albedo, _gbuffer.textures[0]);
+			bgfx::setTexture(2, _light.s_material, _gbuffer.textures[3]);
+			bgfx::setTexture(3, _light.s_emissive, _gbuffer.textures[4]);
+			bgfx::setTexture(4, _light.s_depth, _gbuffer.textures[2]);
+			bgfx::setUniform(_light.u_invSceneViewProj, _frame.inverseViewProjection);
+			bgfx::setUniform(_light.u_sceneCamera, _frame.cameraPosition);
+			bgfx::setUniform(_light.u_sceneDirection, _frame.cameraDirection);
 		}
 
 		static void update(ResT<RenderFrame> _frame, ResT<GBufferResource> _gbuffer,
@@ -1023,7 +1658,8 @@ namespace frost
 			{
 				return;
 			}
-			if (_light->width != _frame->width || _light->height != _frame->height)
+			if (_light->width != _frame->width || _light->height != _frame->height
+				|| _light->depth.idx != _gbuffer->textures[2].idx)
 			{
 				resize(*_light, *_gbuffer);
 			}
@@ -1033,6 +1669,15 @@ namespace frost
 			bgfx::setViewClear(kRenderPassLight, BGFX_CLEAR_COLOR, UINT32_C(0x00000000));
 			bgfx::setViewTransform(kRenderPassLight, NULL, _frame->screenProjection);
 			bgfx::touch(kRenderPassLight);
+
+			// Seed scene color with emission once, including frames without a light.
+			const float emission[4] = {};
+			bgfx::setUniform(_light->u_sunLuminance, emission);
+			bgfx::setUniform(_light->u_sunDirection, emission);
+			bindScene(*_frame, *_gbuffer, *_light);
+			screenSpaceTriangle(_light->layout);
+			bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+			bgfx::submit(kRenderPassLight, _light->program);
 
 			_lights.each([&](const DirectionalLightComponent& _component)
 			{
@@ -1053,14 +1698,14 @@ namespace frost
 				const Vec3 color = {
 					max(0.0f, _component.color.x), max(0.0f, _component.color.y), max(0.0f, _component.color.z)
 				};
-				float luminance[4] = {};
+				float luminance[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 				store(luminance, mul(color, _component.intensity));
 
 				screenSpaceTriangle(_light->layout);
 
 				bgfx::setUniform(_light->u_sunDirection, direction);
 				bgfx::setUniform(_light->u_sunLuminance, luminance);
-				bgfx::setTexture(0, _light->s_normal, _gbuffer->textures[1]);
+				bindScene(*_frame, *_gbuffer, *_light);
 				bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_BLEND_ADD);
 				bgfx::submit(kRenderPassLight, _light->program);
 			});
@@ -1068,12 +1713,16 @@ namespace frost
 
 		static void shutdown(ResMutT<LightResource> _light)
 		{
-			if (bgfx::isValid(_light->frameBuffer))
-			{
-				bgfx::destroy(_light->frameBuffer);
-			}
+			destroyTargets(*_light);
 			bgfx::destroy(_light->program);
 			bgfx::destroy(_light->s_normal);
+			bgfx::destroy(_light->s_albedo);
+			bgfx::destroy(_light->s_material);
+			bgfx::destroy(_light->s_emissive);
+			bgfx::destroy(_light->s_depth);
+			bgfx::destroy(_light->u_invSceneViewProj);
+			bgfx::destroy(_light->u_sceneCamera);
+			bgfx::destroy(_light->u_sceneDirection);
 			bgfx::destroy(_light->u_sunDirection);
 			bgfx::destroy(_light->u_sunLuminance);
 		}
@@ -1223,7 +1872,7 @@ namespace frost
 					max(0.0f, _sky.sunTint.x), max(0.0f, _sky.sunTint.y), max(0.0f, _sky.sunTint.z)
 				};
 
-				_sky.sunColor = mul(mul(rgb, tint), max(0.0f, _sky.sunIntensity) * max(0.0f, _sky.exposure));
+				_sky.sunColor = mul(mul(rgb, tint), max(0.0f, _sky.sunIntensity));
 			});
 		}
 
@@ -1308,7 +1957,7 @@ namespace frost
 
 				const float parameters[4] = {
 					max(0.0001f, _component.sunSize), max(0.0001f, _component.sunBloom),
-					max(0.0f, _component.exposure), hour
+					0.0f, hour
 				};
 
 				float perez[20] = {};
@@ -1349,83 +1998,143 @@ namespace frost
 
 } // namespace frost
 
-// Combine pass
+// Combine (tone mapping and debug views)
 namespace frost
 {
-	struct CombineResource
+	struct ToneMapResource
 	{
 		bgfx::ProgramHandle program = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle s_scene = BGFX_INVALID_HANDLE;
 		bgfx::UniformHandle s_albedo = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle s_normal = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle s_depth = BGFX_INVALID_HANDLE;
 		bgfx::UniformHandle u_outputParameters = BGFX_INVALID_HANDLE;
-		bgfx::UniformHandle s_light = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle u_sceneView = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle u_invSceneViewProj = BGFX_INVALID_HANDLE;
 		bgfx::VertexLayout layout;
+		bgfx::UniformHandle s_material = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle s_emissive = BGFX_INVALID_HANDLE;
 	};
 
-	struct CombineSystem
+	static void submitOutput(bgfx::ViewId _view, uint32_t _mode, const RenderFrame& _frame,
+		const GraphicsResource& _graphics, const GBufferResource& _gbuffer,
+		const LightResource& _light, const ToneMapResource& _output)
 	{
-		static void startup(ResMutT<CombineResource> _combine)
-		{
-			bgfx::setViewName(kRenderPassCombine, "Combine");
+		const float parameters[4] = { _frame.exposure, _graphics.preventBanding ? 1.0f : 0.0f,
+			float(_mode), 1.0f / max(0.001f, _graphics.debugDepth) };
+		bgfx::setViewTransform(_view, NULL, _frame.screenProjection);
+		bgfx::setUniform(_output.u_outputParameters, parameters);
+		bgfx::setUniform(_output.u_sceneView, _frame.view);
+		bgfx::setUniform(_output.u_invSceneViewProj, _frame.inverseViewProjection);
+		bgfx::setTexture(0, _output.s_scene, _light.texture);
+		bgfx::setTexture(1, _output.s_albedo, _gbuffer.textures[0]);
+		bgfx::setTexture(2, _output.s_normal, _gbuffer.textures[1]);
+		bgfx::setTexture(3, _output.s_depth, _gbuffer.textures[2]);
+		bgfx::setTexture(4, _output.s_material, _gbuffer.textures[3]);
+		bgfx::setTexture(5, _output.s_emissive, _gbuffer.textures[4]);
+		screenSpaceTriangle(_output.layout);
+		bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+		bgfx::submit(_view, _output.program);
+	}
 
+	struct ToneMapSystem
+	{
+		static void startup(ResMutT<ToneMapResource> _output)
+		{
+			bgfx::setViewName(kRenderPassToneMap, "Tone Mapping");
 			const bgfx::RendererType::Enum type = bgfx::getRendererType();
-			_combine->program = bgfx::createProgram(
+			_output->program = bgfx::createProgram(
 				bgfx::createEmbeddedShader(s_embeddedShaders, type, "vs_deferred_combine"),
 				bgfx::createEmbeddedShader(s_embeddedShaders, type, "fs_deferred_combine"), true);
-
-			FROST_ASSERT(bgfx::isValid(_combine->program), "Failed to create the combine program.");
-
-			_combine->s_albedo = bgfx::createUniform("s_albedo", bgfx::UniformType::Sampler);
-			_combine->s_light = bgfx::createUniform("s_light", bgfx::UniformType::Sampler);
-			_combine->u_outputParameters = bgfx::createUniform("u_outputParameters", bgfx::UniformType::Vec4);
-
-			_combine->layout.begin().add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
+			FROST_ASSERT(bgfx::isValid(_output->program), "Failed to create the output program.");
+			_output->s_scene = bgfx::createUniform("s_scene", bgfx::UniformType::Sampler);
+			_output->s_albedo = bgfx::createUniform("s_albedo", bgfx::UniformType::Sampler);
+			_output->s_normal = bgfx::createUniform("s_normal", bgfx::UniformType::Sampler);
+			_output->s_depth = bgfx::createUniform("s_depth", bgfx::UniformType::Sampler);
+			_output->s_material = bgfx::createUniform("s_material", bgfx::UniformType::Sampler);
+			_output->s_emissive = bgfx::createUniform("s_emissive", bgfx::UniformType::Sampler);
+			_output->u_outputParameters = bgfx::createUniform("u_outputParameters", bgfx::UniformType::Vec4);
+			_output->u_sceneView = bgfx::createUniform("u_sceneView", bgfx::UniformType::Mat4);
+			_output->u_invSceneViewProj = bgfx::createUniform("u_invSceneViewProj", bgfx::UniformType::Mat4);
+			_output->layout.begin().add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
 				.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float).end();
 		}
 
-		static void update(ResT<RenderFrame> _frame, ResT<GBufferResource> _gbuffer,
-			ResT<LightResource> _light, QueryT<const SkyComponent&> _skies, ResT<CombineResource> _combine)
+		static void update(ResT<RenderFrame> _frame, ResT<GraphicsResource> _graphics,
+			ResT<GBufferResource> _gbuffer, ResT<LightResource> _light, ResT<ToneMapResource> _output)
 		{
-			if (0 == _frame->width || 0 == _frame->height)
+			if (0 == _frame->width || 0 == _frame->height) { return; }
+			// Presentation and UI still work without a selected camera.
+			bgfx::setViewRect(kRenderPassToneMap, 0, 0, _frame->width, _frame->height);
+			bgfx::setViewFrameBuffer(kRenderPassToneMap, BGFX_INVALID_HANDLE);
+			bgfx::setViewClear(kRenderPassToneMap, BGFX_CLEAR_COLOR, UINT32_C(0x000000ff));
+			bgfx::touch(kRenderPassToneMap);
+			if (_frame->active)
 			{
-				return;
+				submitOutput(kRenderPassToneMap, GraphicsDebugView::None, *_frame, *_graphics, *_gbuffer, *_light, *_output);
 			}
-
-			// Clear presentation even when there is no selected camera.
-			bgfx::setViewRect(kRenderPassCombine, 0, 0, _frame->width, _frame->height);
-			bgfx::setViewFrameBuffer(kRenderPassCombine, BGFX_INVALID_HANDLE);
-			bgfx::setViewClear(kRenderPassCombine, BGFX_CLEAR_COLOR, UINT32_C(0x000000ff));
-			bgfx::touch(kRenderPassCombine);
-			if (!_frame->active)
-			{
-				return;
-			}
-
-			screenSpaceTriangle(_combine->layout);
-
-			float output[4] = {};
-			_skies.single([&](const SkyComponent& _sky)
-			{
-				output[0] = _sky.preventBanding ? 1.0f : 0.0f;
-				output[1] = isFinite(_sky.time) ? wrap(_sky.time, 24.0f) : 12.0f;
-			});
-
-			bgfx::setViewTransform(kRenderPassCombine, NULL, _frame->screenProjection);
-
-			bgfx::setUniform(_combine->u_outputParameters, output);
-			bgfx::setTexture(0, _combine->s_albedo, _gbuffer->textures[0]);
-			bgfx::setTexture(1, _combine->s_light, _light->texture);
-
-			bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
-
-			bgfx::submit(kRenderPassCombine, _combine->program);
 		}
 
-		static void shutdown(ResMutT<CombineResource> _combine)
+		static void shutdown(ResMutT<ToneMapResource> _output)
 		{
-			bgfx::destroy(_combine->program);
-			bgfx::destroy(_combine->s_albedo);
-			bgfx::destroy(_combine->s_light);
-			bgfx::destroy(_combine->u_outputParameters);
+			bgfx::destroy(_output->program);
+			bgfx::destroy(_output->s_scene);
+			bgfx::destroy(_output->s_albedo);
+			bgfx::destroy(_output->s_normal);
+			bgfx::destroy(_output->s_depth);
+			bgfx::destroy(_output->s_material);
+			bgfx::destroy(_output->s_emissive);
+			bgfx::destroy(_output->u_outputParameters);
+			bgfx::destroy(_output->u_sceneView);
+			bgfx::destroy(_output->u_invSceneViewProj);
+		}
+	};
+
+	struct DebugViewSystem
+	{
+		static void startup()
+		{
+			bgfx::setViewName(kRenderPassDebug, "Debug View");
+		}
+
+		static void update(ResT<RenderFrame> _frame, ResT<GraphicsResource> _graphics,
+			ResT<GBufferResource> _gbuffer, ResT<LightResource> _light, ResT<ToneMapResource> _output)
+		{
+			if (!_frame->active || _graphics->debugView <= GraphicsDebugView::None
+				|| _graphics->debugView >= GraphicsDebugView::Count) { return; }
+			bgfx::setViewRect(kRenderPassDebug, 0, 0, _frame->width, _frame->height);
+			bgfx::setViewFrameBuffer(kRenderPassDebug, BGFX_INVALID_HANDLE);
+			bgfx::setViewClear(kRenderPassDebug, BGFX_CLEAR_NONE);
+			submitOutput(kRenderPassDebug, _graphics->debugView, *_frame, *_graphics, *_gbuffer, *_light, *_output);
+		}
+	};
+
+	struct GraphicsStatsSystem
+	{
+		static void update(ResT<GraphicsResource> _graphics, ResMutT<GraphicsStatsResource> _stats)
+		{
+			const bgfx::Stats* stats = bgfx::getStats();
+			double* times[] = { &_stats->geometryMs, &_stats->lightMs, &_stats->skyMs,
+				&_stats->toneMapMs, &_stats->debugViewMs, &_stats->uiMs };
+			for (double* time : times) { *time = -1.0; }
+			_stats->gpuMs = -1.0;
+			_stats->draws = stats->numDraw;
+			_stats->textures = stats->numTextures;
+			_stats->renderTargetBytes = stats->rtMemoryUsed;
+			if (!_graphics->gpuProfiling || stats->gpuTimerFreq <= 0) { return; }
+			const double milliseconds = 1000.0 / double(stats->gpuTimerFreq);
+			if (stats->gpuTimeEnd > stats->gpuTimeBegin)
+			{
+				_stats->gpuMs = double(stats->gpuTimeEnd - stats->gpuTimeBegin) * milliseconds;
+			}
+			for (uint16_t ii = 0; ii < stats->numViews; ++ii)
+			{
+				const bgfx::ViewStats& view = stats->viewStats[ii];
+				if (view.view < FROST_COUNTOF(times) && view.gpuTimeEnd > view.gpuTimeBegin)
+				{
+					*times[view.view] = double(view.gpuTimeEnd - view.gpuTimeBegin) * milliseconds;
+				}
+			}
 		}
 	};
 

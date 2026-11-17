@@ -15,14 +15,92 @@
 namespace frost
 {
 	FROST_HANDLE(MeshHandle);
+	FROST_HANDLE(TextureHandle);
+	FROST_HANDLE(MaterialHandle);
 
 	FROST_ERROR_RESULT(kErrorMeshCreate, FROST_MAKEFOURCC('m', 's', 'h', 'c') );
 	FROST_ERROR_RESULT(kErrorMeshFormat, FROST_MAKEFOURCC('m', 's', 'h', 'f') );
+	FROST_ERROR_RESULT(kErrorTextureCreate, FROST_MAKEFOURCC('t', 'x', 'c', 'r') );
+	FROST_ERROR_RESULT(kErrorTextureFormat, FROST_MAKEFOURCC('t', 'x', 'f', 'm') );
+	FROST_ERROR_RESULT(kErrorMaterialCreate, FROST_MAKEFOURCC('m', 't', 'c', 'r') );
+	FROST_ERROR_RESULT(kErrorMaterialFormat, FROST_MAKEFOURCC('m', 't', 'f', 'm') );
 
 	constexpr uint32_t kAssetTypeMesh = FROST_MAKEFOURCC('M', 'E', 'S', 'H');
-	constexpr uint32_t kMeshVersion   = 1;
+	constexpr uint32_t kMeshVersion   = 2;
+	constexpr uint32_t kAssetTypeTexture = FROST_MAKEFOURCC('T', 'E', 'X', 'R');
+	constexpr uint32_t kAssetTypeMaterial = FROST_MAKEFOURCC('M', 'A', 'T', 'L');
+	constexpr uint32_t kTextureVersion = 1; // Little-endian TextureAssetFlags followed by DDS.
+	constexpr uint32_t kMaterialVersion = 1;
+	constexpr uint32_t kMaterialPayloadSize = 96;
 
-	/// Mesh payload buffer encodings. All scalar fields are little endian.
+	struct TextureAssetFlags
+	{
+		enum : uint32_t { Srgb = 0x1 };
+	};
+
+	struct MaterialTexture
+	{
+		enum Enum { BaseColor, Normal, MetallicRoughness, Occlusion, Emissive, Count };
+	};
+
+	struct MaterialFlags
+	{
+		enum : uint32_t { Masked = 0x1, DoubleSided = 0x2 };
+	};
+
+	struct TextureSampler
+	{
+		enum : uint32_t
+		{
+			ClampU = 0x1, ClampV = 0x2, MirrorU = 0x4, MirrorV = 0x8,
+			Point = 0x10, Anisotropic = 0x20,
+		};
+	};
+
+	/// Linear factors. Color textures are sRGB; normal and parameter textures are linear.
+	/// Metallic-roughness uses G for roughness and B for metallic; occlusion uses R.
+	/// Tangent-space normal maps use +Y, with reconstructed positive Z.
+	/// Material v1 stores 12 float factors, u32 flags, float cutoff, then five
+	/// (u32 dependency index or UINT32_MAX, u32 sampler flags) pairs. Do not write this struct.
+	struct MaterialDesc
+	{
+		float baseColor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+		Vec3 emissive = { 0.0f, 0.0f, 0.0f };
+		float emissiveStrength = 1.0f;
+		float metallic = 0.0f;
+		float roughness = 1.0f;
+		float normalScale = 1.0f;
+		float occlusionStrength = 1.0f;
+		uint32_t flags = 0;
+		float alphaCutoff = 0.5f;
+		TextureHandle textures[MaterialTexture::Count];
+		uint32_t samplers[MaterialTexture::Count] = {};
+	};
+
+	/// Creation consumes _mem even on failure, and returns one owned reference.
+	/// Call on the application thread after graphics startup, like createMesh.
+	TextureHandle createTexture(const Memory* _mem, Error* _err = ErrorIgnore{});
+	MaterialHandle createMaterial(const MaterialDesc& _desc, Error* _err = ErrorIgnore{});
+
+	/// Resolved textures are in asset dependency-table order. The material retains them.
+	MaterialHandle createMaterial(const Memory* _mem, const TextureHandle* _textures, uint16_t _numTextures,
+		Error* _err = ErrorIgnore{});
+	void addRef(TextureHandle _handle);
+	void addRef(MaterialHandle _handle);
+	void release(TextureHandle _handle);
+	void release(MaterialHandle _handle);
+
+	/// Resolved default materials are in dependency-table order. The mesh retains them.
+	MeshHandle createMesh(const Memory* _mem, const MaterialHandle* _materials, uint16_t _numMaterials,
+		Error* _err = ErrorIgnore{});
+	uint16_t getMeshMaterialCount(MeshHandle _handle);
+	/// The returned name borrows storage from the live mesh.
+	StringView getMeshMaterialName(MeshHandle _handle, uint16_t _slot);
+
+	/// Mesh v2: group count (u32), material-slot count (u16), then slots
+	/// (u16 name length, name bytes, u32 dependency index or UINT32_MAX), then groups.
+	/// Each group contains bounds, vertex layout, counts/flags, material slot (u16),
+	/// primitive count (u16), buffers and primitive ranges. Scalars are little endian.
 	struct MeshFormat
 	{
 		enum : uint32_t
@@ -37,6 +115,8 @@ namespace frost
 	struct MeshComponent
 	{
 		MeshHandle handle;
+		const MaterialHandle* materials = NULL; //!< Borrowed overrides indexed by mesh material slot.
+		uint16_t numMaterials = 0; //!< Keep the array and referenced materials alive while rendering.
 	};
 
 	/// World-space mesh transform. An absent component means identity.
@@ -75,13 +155,11 @@ namespace frost
 		float sunBloom = 3.0f;
 		Vec3 sunTint = { 1.0f, 1.0f, 1.0f }; //!< Linear RGB multiplier.
 		float sunIntensity = 1.0f;  //!< Multiplier for direct sunlight and sun disk.
-		float exposure = 0.1f;      //!< Linear exposure for sky and surface sunlight.
-		bool preventBanding = true;
 
 		/// Calculated during PreUpdate. Unit world direction toward the sun.
 		Vec3 sunDirection = { 0.0f, 1.0f, 0.0f };
 
-		/// Calculated linear RGB sunlight, including sunTint, sunIntensity and exposure.
+		/// Calculated linear RGB sunlight, including sunTint and sunIntensity.
 		Vec3 sunColor = { 0.0f, 0.0f, 0.0f };
 	};
 
@@ -132,6 +210,9 @@ namespace frost
 		///
 		float nearPlane = 0.1f;
 		float farPlane = 1000.0f;
+
+		/// Manual exposure in stops. Increasing by one doubles image brightness.
+		float exposure = -3.0f;
 	};
 
 	/// Renderer camera selection. Assign another camera entity to switch views.
@@ -227,6 +308,27 @@ namespace frost
 		};
 	};
 
+	struct GraphicsDebugView
+	{
+		enum Enum
+		{
+			None, BaseColor, Normals, Depth, LinearDepth, WorldPosition, Luminance,
+			Metallic, Roughness, Occlusion, Emissive,
+			Count
+		};
+	};
+
+	/// Latest available bgfx measurements. Negative GPU times mean unavailable.
+	struct GraphicsStatsResource
+	{
+		double gpuMs = -1.0;
+		double geometryMs = -1.0, lightMs = -1.0, skyMs = -1.0;
+		double toneMapMs = -1.0, debugViewMs = -1.0, uiMs = -1.0;
+		uint32_t draws = 0;
+		uint16_t textures = 0;
+		int64_t renderTargetBytes = 0;
+	};
+
 	struct GraphicsResource
 	{
 		/// Initial render width in pixels.
@@ -246,6 +348,13 @@ namespace frost
 		/// TODO: Define macros for static arrays and make them synced with BGFX_CONFIG_ macros
 		///
 		uint16_t maxMeshes = 1024;
+		uint16_t maxTextures = 1024;
+		uint16_t maxMaterials = 1024;
+
+		GraphicsDebugView::Enum debugView = GraphicsDebugView::None;
+		float debugDepth = 100.0f; //!< View-space distance mapped to white in the linear depth view.
+		bool preventBanding = true;
+		bool gpuProfiling = true;
 	};
 
 	struct GraphicsPlugin : PluginI

@@ -7,3 +7,7 @@ endif()
 if(FROST_BUILD_TOOLS_MESHC)
 	add_subdirectory(meshc)
 endif()
+
+if(FROST_BUILD_TOOLS_MATERIALC)
+	add_subdirectory(materialc)
+endif()

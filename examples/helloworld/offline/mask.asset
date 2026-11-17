@@ -1,0 +1,6 @@
+guid = 06ad64d2-48ab-4c8a-932d-000000000004
+source = texture-alpha-test.png
+format = BC3
+mips = true
+linear = false
+alphaCutoff = 0.5

@@ -3,6 +3,9 @@
  * License: https://github.com/bkaradzic/bimg/blob/master/LICENSE
  */
 
+#include <graphics.h>
+#include <frost/settings.h>
+#include <frost/file.h>
 #include <bx/allocator.h>
 #include <bx/readerwriter.h>
 #include <bx/endian.h>
@@ -504,7 +507,7 @@ bimg::ImageContainer* convert(bx::AllocatorI* _allocator, const void* _inputData
 				// HDR
 				else if ( (!bimg::isCompressed(inputFormat) && 8 != inputBlockInfo.rBits)
 					 || outputFormat == bimg::TextureFormat::BC6H
-					 || outputFormat == bimg::TextureFormat::BC7
+					 || (outputFormat == bimg::TextureFormat::BC7 && !_options.alphaTest)
 						)
 				{
 					uint32_t size = (uint32_t)bimg::imageGetSize(
@@ -558,13 +561,16 @@ bimg::ImageContainer* convert(bx::AllocatorI* _allocator, const void* _inputData
 					if (1 < numMips
 					&&  _err->isOk() )
 					{
-						bimg::imageRgba32fToLinear(rgba32f
+						if (!_options.linear)
+						{
+							bimg::imageRgba32fToLinear(rgba32f
 							, mip.m_width
 							, mip.m_height
 							, mip.m_depth
 							, mip.m_width*16
 							, rgba32f
 							);
+						}
 
 						for (uint8_t lod = 1; lod < numMips && _err->isOk(); ++lod)
 						{
@@ -591,14 +597,21 @@ bimg::ImageContainer* convert(bx::AllocatorI* _allocator, const void* _inputData
 							bimg::imageGetRawData(*output, side, lod, output->m_data, output->m_size, dstMip);
 							dstData = const_cast<uint8_t*>(dstMip.m_data);
 
-							bimg::imageRgba32fToGamma(
+							if (_options.linear)
+							{
+								bx::memCopy(rgbaDst, rgba32f, dstMip.m_width * dstMip.m_height * 16);
+							}
+							else
+							{
+								bimg::imageRgba32fToGamma(
 								  rgbaDst
-								, mip.m_width
-								, mip.m_height
-								, mip.m_depth
-								, mip.m_width*16
+								, dstMip.m_width
+								, dstMip.m_height
+								, dstMip.m_depth
+								, dstMip.m_width*16
 								, rgba32f
 								);
+							}
 
 							bimg::imageEncodeFromRgba32f(
 								  _allocator
@@ -814,6 +827,7 @@ bimg::ImageContainer* convert(bx::AllocatorI* _allocator, const void* _inputData
 							, dstMip.m_width*4
 							, bx::strideAlign(dstMip.m_width/2, blockWidth)*4
 							, rgba
+							, !_options.linear
 							);
 
 						if (_options.alphaTest)
@@ -1024,6 +1038,8 @@ static int32_t writeFileFormats(bx::WriterI* _writer, bx::Error* _err)
 
 static const bx::CommandLineOption s_options[] =
 {
+	{ '\0', "config", 1, "<file>", "Frost texture import description." },
+	{ '\0', "guid", 1, "<guid>", "Persistent GUID for a Frost texture asset." },
 	{ 'h',  "help",      0, NULL,          "Help."                                                         },
 	{ 'v',  "version",   0, NULL,          "Version information only."                                     },
 	{ 'f',  NULL,        1, "<file path>", "Input file path.\n"
@@ -1193,12 +1209,41 @@ int main(int _argc, const char* _argv[])
 		return bx::kExitFailure;
 	}
 
+	frost::DefaultAllocator importAllocator;
+	frost::Settings settings(&importAllocator);
+	frost::FilePath sourcePath;
+	const char* configPath = cmdLine.findOption("config");
+	if (NULL != configPath)
+	{
+		frost::FileReader configReader;
+		frost::Error configError;
+		if (!frost::open(&configReader, configPath, &configError)) { help("Unable to open import description."); return 1; }
+		settings.read(&configReader, &configError);
+		frost::close(&configReader);
+		const frost::StringView source = settings.get("source");
+		if (!configError.isOk() || source.isEmpty()) { help("Import description requires a source."); return 1; }
+		sourcePath.set(frost::FilePath(configPath).getPath());
+		sourcePath.join(source);
+	}
+	const auto importBool = [&](const char* _key, bool _default)
+	{
+		const frost::StringView value = settings.get(_key);
+		if (!value.isEmpty() && !frost::fromString(&_default, value)) { help("Invalid boolean import setting."); exit(1); }
+		return _default;
+	};
+	const auto importUint = [&](const char* _key, uint32_t _default)
+	{
+		const frost::StringView value = settings.get(_key);
+		if (!value.isEmpty() && !frost::fromString(&_default, value)) { help("Invalid integer import setting."); exit(1); }
+		return _default;
+	};
+
 	int32_t positional = 1;
 
 	const char* inputFileName = cmdLine.findOption('f');
 	inputFileName = NULL != inputFileName
 		? inputFileName
-		: cmdLine.getPositional(positional++)
+		: (NULL != configPath ? sourcePath.getCPtr() : cmdLine.getPositional(positional++))
 		;
 	if (NULL == inputFileName)
 	{
@@ -1217,7 +1262,12 @@ int main(int _argc, const char* _argv[])
 		return bx::kExitFailure;
 	}
 
-	bx::StringView saveAs = cmdLine.findOption("as");
+	const bool cooked = 0 == bx::strCmpI(bx::FilePath(outputFileName).getExt(), ".bin");
+	frost::Guid guid;
+	const char* guidOption = cmdLine.findOption("guid");
+	const frost::StringView guidText = NULL != guidOption ? frost::StringView(guidOption) : settings.get("guid");
+	if (cooked && (!frost::fromString(&guid, guidText) || !frost::isValid(guid))) { help("Cooked textures require a persistent GUID."); return 1; }
+	bx::StringView saveAs = cooked ? bx::StringView("dds") : bx::StringView(cmdLine.findOption("as"));
 	saveAs = saveAs.isEmpty() ? bx::strFindI(outputFileName, ".ktx2") : saveAs;
 	saveAs = saveAs.isEmpty() ? bx::strFindI(outputFileName, ".ktx") : saveAs;
 	saveAs = saveAs.isEmpty() ? bx::strFindI(outputFileName, ".dds") : saveAs;
@@ -1231,7 +1281,14 @@ int main(int _argc, const char* _argv[])
 	}
 
 	Options options;
+	options.maxSize = importUint("maxSize", UINT32_MAX);
+	options.mipSkip = importUint("mipSkip", 0);
 
+	if (!settings.get("alphaCutoff").isEmpty())
+	{
+		options.alphaTest = true;
+		if (!frost::fromString(&options.edge, settings.get("alphaCutoff")) || options.edge <= 0.0f || options.edge >= 1.0f) { help("Invalid alphaCutoff."); return 1; }
+	}
 	const char* alphaRef = cmdLine.findOption("ref");
 	if (NULL != alphaRef)
 	{
@@ -1243,13 +1300,13 @@ int main(int _argc, const char* _argv[])
 	}
 
 	options.sdf       = cmdLine.hasArg("sdf");
-	options.mips      = cmdLine.hasArg('m', "mips");
-	options.normalMap = cmdLine.hasArg('n', "normalmap");
+	options.mips      = cmdLine.hasArg('m', "mips") || importBool("mips", false);
+	options.normalMap = cmdLine.hasArg('n', "normalmap") || importBool("normalMap", false);
 	options.equirect  = cmdLine.hasArg("equirect");
 	options.strip     = cmdLine.hasArg("strip");
 	options.iqa       = cmdLine.hasArg("iqa");
 	options.pma       = cmdLine.hasArg("pma");
-	options.linear    = cmdLine.hasArg("linear");
+	options.linear    = cmdLine.hasArg("linear") || importBool("linear", false);
 
 	if (options.equirect
 	&&  options.strip)
@@ -1285,7 +1342,10 @@ int main(int _argc, const char* _argv[])
 	}
 
 	options.format = bimg::TextureFormat::Count;
+	char configuredFormat[32];
+	frost::strCopy(configuredFormat, sizeof(configuredFormat), settings.get("format"));
 	const char* type = cmdLine.findOption('t');
+	type = NULL != type ? type : (configuredFormat[0] != '\0' ? configuredFormat : NULL);
 	if (NULL != type)
 	{
 		options.format = bimg::getFormat(type);
@@ -1322,7 +1382,10 @@ int main(int _argc, const char* _argv[])
 		}
 	}
 
+	char configuredQuality[16];
+	frost::strCopy(configuredQuality, sizeof(configuredQuality), settings.get("quality"));
 	const char* quality = cmdLine.findOption('q');
+	quality = NULL != quality ? quality : (configuredQuality[0] != '\0' ? configuredQuality : NULL);
 	if (NULL != quality)
 	{
 		switch (bx::toLower(quality[0]) )
@@ -1393,6 +1456,18 @@ int main(int _argc, const char* _argv[])
 		bx::FileWriter writer;
 		if (bx::open(&writer, outputFileName, false, &err) )
 		{
+			frost::AssetHeader header;
+			uint8_t headerBytes[frost::kAssetHeaderSize];
+			if (cooked)
+			{
+				header.type = frost::kAssetTypeTexture;
+				header.payloadVersion = frost::kTextureVersion;
+				header.guid = guid;
+				frost::writeAssetHeader(headerBytes, sizeof(headerBytes), header, frost::ErrorAssert{});
+				bx::write(&writer, headerBytes, sizeof(headerBytes), &err);
+				// The vendored DDS writer does not preserve its sRGB flag.
+				bx::writeLE(&writer, uint32_t(options.linear ? 0 : frost::TextureAssetFlags::Srgb), &err);
+			}
 			if (!bx::strFindI(saveAs, "ktx2").isEmpty() )
 			{
 				bimg::imageWriteKtx2(&writer, *output, output->m_data, output->m_size, &err);
@@ -1454,6 +1529,15 @@ int main(int _argc, const char* _argv[])
 					);
 			}
 
+			if (cooked)
+			{
+				const int64_t size = bx::seek(&writer);
+				if (size > UINT32_MAX) { BX_ERROR_SET(&err, TEXTRUREC_ERROR, "Texture exceeds the asset size limit."); }
+				header.payloadSize = uint32_t(size - frost::kAssetHeaderSize);
+				frost::writeAssetHeader(headerBytes, sizeof(headerBytes), header, frost::ErrorAssert{});
+				bx::seek(&writer, 0, bx::Whence::Begin);
+				bx::write(&writer, headerBytes, sizeof(headerBytes), &err);
+			}
 			bx::close(&writer);
 
 			if (!err.isOk() )
@@ -1487,7 +1571,7 @@ int main(int _argc, const char* _argv[])
 			bx::read(&reader, inputData, inputSize, &err);
 			bx::close(&reader);
 
-			bimg::ImageContainer* input = bimg::imageParse(&allocator, inputData, inputSize, bimg::TextureFormat::Count, &err);
+			bimg::ImageContainer* input = bimg::imageParse(&allocator, inputData + (cooked ? frost::kAssetHeaderSize + 4 : 0), inputSize - (cooked ? frost::kAssetHeaderSize + 4 : 0), bimg::TextureFormat::Count, &err);
 			if (!err.isOk() )
 			{
 				help("Failed to validate file.", err);
@@ -1502,7 +1586,6 @@ int main(int _argc, const char* _argv[])
 			||  input->m_depth     != output->m_depth
 			||  input->m_numLayers != output->m_numLayers
 			||  input->m_numMips   != output->m_numMips
-			||  input->m_hasAlpha  != output->m_hasAlpha
 			||  input->m_cubeMap   != output->m_cubeMap
 			   )
 			{
@@ -1542,6 +1625,7 @@ int main(int _argc, const char* _argv[])
 				}
 			}
 
+			bimg::imageFree(input);
 			bx::free(&allocator, inputData);
 		}
 

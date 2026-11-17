@@ -5,7 +5,7 @@ $input v_skyColor, v_screenPos, v_viewDir
 * License: https://github.com/bkaradzic/bgfx/blob/master/LICENSE
 */
 
-uniform vec4 u_parameters; // x - sun size, y - sun bloom, z - exposition, w - time
+uniform vec4 u_parameters; // x - sun size, y - sun bloom, z - unused, w - time
 uniform vec4 u_sunDirection;
 uniform vec4 u_sunTint;
 
@@ -20,7 +20,7 @@ void main()
 	float sun  = exp(-dist/ u_parameters.y / size2) + step(dist, size2);
 	float sun2 = min(sun * sun, 1.0);
 	vec3 color = v_skyColor + sun2 * u_sunTint.rgb;
-	// Linear color; final combine performs display encoding.
+	// Linear HDR color; the output pass handles exposure and tone mapping.
 
 	gl_FragColor = vec4(color, 1.0);
 }
