@@ -22,7 +22,7 @@ namespace
 	{
 		// Assets
 		frost::MeshHandle floor;
-		frost::MeshHandle bunny;
+		frost::MeshHandle dragon;
 		frost::TextureHandle moonTexture;
 		frost::MaterialHandle materials[2];
 
@@ -31,7 +31,7 @@ namespace
 		{
 			Player,
 			Floor,
-			Bunny,
+			Dragon,
 			Sky,
 			Moon,
 
@@ -66,9 +66,9 @@ namespace
 			frost::Error err;
 			_scene->moonTexture = frost::createTexture(readAsset(_world, "tex_moon.bin", &err), &err);
 			_scene->materials[0] = frost::createMaterial(readAsset(_world, "mat_floor.bin", &err), NULL, 0, &err);
-			_scene->materials[1] = frost::createMaterial(readAsset(_world, "mat_bunny.bin", &err), NULL, 0, &err);
+			_scene->materials[1] = frost::createMaterial(readAsset(_world, "mat_dragon.bin", &err), NULL, 0, &err);
 			_scene->floor = frost::createMesh(readAsset(_world, "mesh_cube.bin", &err), &err);
-			_scene->bunny = frost::createMesh(readAsset(_world, "mesh_bunny.bin", &err), &err);
+			_scene->dragon = frost::createMesh(readAsset(_world, "mesh_dragon.bin", &err), &err);
 			if (!err.isOk())
 			{
 				frost::debugPrintf("Unable to load scene assets: %s\n", err.getMessage().getCPtr());
@@ -82,13 +82,13 @@ namespace
 			_scene->instances[SceneResource::Floor] = _world.spawn(
 				frost::MeshComponent{ _scene->floor, &_scene->materials[0], 1 }, transform).id();
 
-			// Spawn bunny
+			// Spawn dragon
 			transform = {};
-			transform.position = { 0.0f, -0.135f, 0.0f };
+			transform.position = { 0.0f, -0.1f, 0.0f };
 			transform.rotation = frost::rotateY(frost::kPi);
 			transform.scale = { 3.0f, 3.0f, 3.0f };
-			_scene->instances[SceneResource::Bunny] = _world.spawn(
-				frost::MeshComponent{ _scene->bunny, &_scene->materials[1], 1 }, transform).id();
+			_scene->instances[SceneResource::Dragon] = _world.spawn(
+				frost::MeshComponent{ _scene->dragon, &_scene->materials[1], 1 }, transform).id();
 
 			// Spawn sky TODO: This is a mess, figure out how to deal with moon and sun in the same sky system...
 			frost::SkyComponent sky;
@@ -116,9 +116,17 @@ namespace
 		}
 
 		static void update(frost::World& _world, frost::ResT<SceneResource> _scene,
+			frost::ResT<frost::TimeResource> _time,
 			frost::ResMutT<frost::SunShadowResource> _shadows,
 			frost::QueryT<const frost::SkyComponent&, frost::DirectionalLightComponent&> _suns)
 		{
+			// Animate the dragon around its base with a uniform scale.
+			frost::TransformComponent* transform = _world.getMut<frost::TransformComponent>(_scene->instances[SceneResource::Dragon]);
+			const float time = float(_time->elapsed);
+			const float scale = 3.0f + 0.25f * frost::sin(time * 1.5f);
+			transform->scale = { scale, scale, scale };
+			transform->rotation = frost::rotateY(frost::kPi + time * 0.35f);
+
 			// Update directional light direction and color based on sun and moon.
 			_suns.each([&](const frost::SkyComponent& _sky, frost::DirectionalLightComponent& _light)
 			{
@@ -153,7 +161,7 @@ namespace
 			}
 
 			// Destroy assets
-			frost::release(_scene->bunny);
+			frost::release(_scene->dragon);
 			frost::release(_scene->floor);
 			for (frost::MaterialHandle material : _scene->materials)
 			{

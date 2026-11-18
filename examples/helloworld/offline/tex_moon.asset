@@ -1,6 +1,3 @@
-guid = 06ad64d2-48ab-4c8a-932d-000000000005
-source = source/moon.jpg
-format = BC1
-mips = true
-linear = false
-quality = fastest
+version https://git-lfs.github.com/spec/v1
+oid sha256:d7e8a0c7403bd1c915835ed0c21fa39868c0a6f23e4b0cd0dc67beaef0b87c47
+size 127
