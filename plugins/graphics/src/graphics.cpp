@@ -88,6 +88,11 @@ namespace frost
 		_app.insertResource<RenderFrame>();
 		_app.insertResource<GBufferResource>();
 		_app.insertResource<LightResource>();
+		_app.getWorld().initResource<EnvironmentResource>();
+		_app.getWorld().initResource<SunShadowResource>();
+		_app.insertResource<EnvironmentLightingResource>();
+		_app.insertResource<SunShadowTargets>();
+		_app.insertResource<ShadowDrawResource>();
 		_app.insertResource<SkyResource>();
 		_app.insertResource<ToneMapResource>();
 		_app.getWorld().initResource<GraphicsStatsResource>();
@@ -100,6 +105,8 @@ namespace frost
 		startup = _app.addSystems(EcsStage::Startup, GBufferSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, LightSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, SkySystem::startup).after(startup).id();
+		startup = _app.addSystems(EcsStage::Startup, EnvironmentLightingSystem::startup).after(startup).id();
+		startup = _app.addSystems(EcsStage::Startup, SunShadowSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, ToneMapSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, DebugViewSystem::startup).after(startup).id();
 		_app.addSystems(EcsStage::Startup, UiSystem::startup).after(startup);
@@ -110,7 +117,9 @@ namespace frost
 		// Prepare shared frame data, then submit passes in dependency order.
 		SystemId update = _app.addSystems(EcsStage::PostUpdate, RendererSystem::update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, RenderFrameSystem::update).after(update).id();
+		update = _app.addSystems(EcsStage::PostUpdate, EnvironmentLightingSystem::update).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, GBufferSystem::update).after(update).id();
+		update = _app.addSystems(EcsStage::PostUpdate, SunShadowSystem::update).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, LightSystem::update).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, SkySystem::update).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, ToneMapSystem::update).after(update).id();
@@ -121,6 +130,8 @@ namespace frost
 		// Release GPU resources before stopping the backend.
 		SystemId shutdown = _app.addSystems(EcsStage::Shutdown, UiSystem::shutdown).id();
 		shutdown = _app.addSystems(EcsStage::Shutdown, ToneMapSystem::shutdown).after(shutdown).id();
+		shutdown = _app.addSystems(EcsStage::Shutdown, SunShadowSystem::shutdown).after(shutdown).id();
+		shutdown = _app.addSystems(EcsStage::Shutdown, EnvironmentLightingSystem::shutdown).after(shutdown).id();
 		shutdown = _app.addSystems(EcsStage::Shutdown, SkySystem::shutdown).after(shutdown).id();
 		shutdown = _app.addSystems(EcsStage::Shutdown, LightSystem::shutdown).after(shutdown).id();
 		shutdown = _app.addSystems(EcsStage::Shutdown, GBufferSystem::shutdown).after(shutdown).id();

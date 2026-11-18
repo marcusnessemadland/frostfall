@@ -6,6 +6,8 @@ $input v_texcoord0
  */
 
 #include "../common/common.sh"
+#include "environment.sh"
+#include "shadow.sh"
 
 SAMPLER2D(s_normal, 0);
 SAMPLER2D(s_albedo, 1);
@@ -20,19 +22,24 @@ uniform vec4 u_sceneDirection;
 
 void main()
 {
+	if (u_sunLuminance.w < -0.5) { gl_FragColor = vec4_splat(0.0); return; }
 	vec4 encodedNormal = texture2D(s_normal, v_texcoord0);
 	if (encodedNormal.w < 0.5) { discard; }
-	if (u_sunLuminance.w < 0.5)
-	{
-		gl_FragColor = vec4(texture2D(s_emissive, v_texcoord0).rgb, 1.0);
-		return;
-	}
 	float depth = texture2D(s_depth, v_texcoord0).x;
 	vec3 clip = vec3(v_texcoord0 * 2.0 - 1.0, toClipSpaceDepth(depth));
 	clip.y = toClipSpaceY(clip.y);
 	vec3 position = clipToWorld(u_invSceneViewProj, clip);
 	vec3 view = normalize(mix(u_sceneCamera.xyz - position, -u_sceneDirection.xyz, u_sceneCamera.w));
 	vec3 normal = normalize(decodeNormalUint(encodedNormal.xyz));
+	if (u_sunLuminance.w < 0.5)
+	{
+		vec3 parameters = texture2D(s_material, v_texcoord0).rgb;
+		vec3 diffuse, specular;
+		environmentLighting(normal, view, texture2D(s_albedo, v_texcoord0).rgb,
+			parameters.r, max(parameters.g, 0.045), parameters.b, diffuse, specular);
+		gl_FragColor = vec4(texture2D(s_emissive, v_texcoord0).rgb + diffuse + specular, 1.0);
+		return;
+	}
 	vec3 light = u_sunDirection.xyz;
 	float NoL = saturate(dot(normal, light));
 	float NoV = max(dot(normal, view), 0.0001);
@@ -56,5 +63,6 @@ void main()
 	vec3 diffuse = (vec3_splat(1.0) - fresnel) * (1.0 - metallic) * baseColor / 3.14159265359;
 	vec3 specular = distribution * visibility * fresnel;
 	// Material occlusion is reserved for indirect illumination.
-	gl_FragColor = vec4((diffuse + specular) * u_sunLuminance.rgb * NoL, 0.0);
+	gl_FragColor = vec4((diffuse + specular) * u_sunLuminance.rgb * NoL
+		* shadowVisibility(position, normal), 0.0);
 }

@@ -101,6 +101,33 @@ struct Primitive
 
 typedef stl::vector<Primitive> PrimitiveArray;
 
+static uint32_t simplifyMesh(uint16_t* _indices, uint32_t _numIndices, const uint8_t* _vertices,
+	uint32_t _numVertices, uint32_t _stride, PrimitiveArray& _primitives, float _ratio, float _error)
+{
+	uint16_t* simplified = new uint16_t[_numIndices];
+	uint32_t count = 0;
+	for (PrimitiveArray::iterator it = _primitives.begin(); it != _primitives.end(); ++it)
+	{
+		Primitive& primitive = *it;
+		const uint16_t* source = _indices + primitive.m_startIndex;
+		const uint32_t target = bx::max(3u, uint32_t(float(primitive.m_numIndices) * _ratio) / 3 * 3);
+		uint32_t reduced = uint32_t(meshopt_simplify(simplified + count, source,
+			primitive.m_numIndices, (const float*)_vertices, _numVertices, _stride, target, _error));
+		if (0 == reduced)
+		{
+			// Retain small/disconnected primitives instead of dropping material slots.
+			reduced = primitive.m_numIndices;
+			bx::memCopy(simplified + count, source, reduced * sizeof(uint16_t));
+		}
+		primitive.m_startIndex = count;
+		primitive.m_numIndices = reduced;
+		count += reduced;
+	}
+	bx::memCopy(_indices, simplified, count * sizeof(uint16_t));
+	delete[] simplified;
+	return count;
+}
+
 struct Axis
 {
 	enum Enum
@@ -1035,6 +1062,8 @@ void parseGltf(char* _data, uint32_t _size, Mesh* _mesh, bool _hasBc, const bx::
 
 static const bx::CommandLineOption s_options[] =
 {
+	{ '\0', "simplify", 1, "<ratio>", "Triangle target ratio, (0, 1]. Default: 1." },
+	{ '\0', "simplify-error", 1, "<error>", "Maximum relative simplification error, [0, 1]. Default: 0.01." },
 	{ '\0', "config",      1, "<file>", "Frost mesh import description." },
 	{ '\0', "guid",        1, "<guid>",      "Persistent asset GUID (required). Reuse it when rebuilding." },
 	{ 'h',  "help",        0, NULL,          "Display this help and exit."                                 },
@@ -1161,6 +1190,25 @@ int main(int _argc, const char* _argv[])
 		if (!value.isEmpty() && !frost::fromString(&_default, value)) { help("Invalid integer import setting."); exit(1); }
 		return _default;
 	};
+
+	const auto importFloat = [&](const char* _key, float _default)
+	{
+		const frost::StringView value = settings.get(_key);
+		if (!value.isEmpty() && !frost::fromString(&_default, value)) { help("Invalid float import setting."); exit(1); }
+		return _default;
+	};
+	float simplifyRatio = importFloat("simplify", 1.0f);
+	float simplifyError = importFloat("simplifyError", 0.01f);
+	const char* ratioArg = cmdLine.findOption("simplify");
+	const char* errorArg = cmdLine.findOption("simplify-error");
+	if ((NULL != ratioArg && !frost::fromString(&simplifyRatio, frost::StringView(ratioArg)))
+		|| (NULL != errorArg && !frost::fromString(&simplifyError, frost::StringView(errorArg)))
+		|| !frost::isFinite(simplifyRatio) || simplifyRatio <= 0.0f || simplifyRatio > 1.0f
+		|| !frost::isFinite(simplifyError) || simplifyError < 0.0f || simplifyError > 1.0f)
+	{
+		help("Simplification requires ratio in (0, 1] and error in [0, 1].");
+		return bx::kExitFailure;
+	}
 
 	int32_t positional = 1;
 
@@ -1551,6 +1599,11 @@ int main(int _argc, const char* _argv[])
 				}
 
 
+				if (simplifyRatio < 1.0f && numIndices > 0)
+				{
+					numIndices = int32_t(simplifyMesh(indexData, uint32_t(numIndices), vertexData,
+						uint32_t(numVertices), stride, primitives, simplifyRatio, simplifyError));
+				}
 				triReorderElapsed -= bx::getHPCounter();
 
 				for (PrimitiveArray::const_iterator primIt = primitives.begin(); primIt != primitives.end(); ++primIt)

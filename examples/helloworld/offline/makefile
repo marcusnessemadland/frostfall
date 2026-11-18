@@ -9,8 +9,8 @@ MESHC ?= "$(BUILD_DIR)/$(CONFIG)/$(FROST_TOOLS_PREFIX)meshc$(if $(filter windows
 TEXTUREC := "$(BUILD_DIR)/$(CONFIG)/$(FROST_TOOLS_PREFIX)texturec$(if $(filter windows,$(OS)),.exe)"
 MATERIALC ?= "$(BUILD_DIR)/$(CONFIG)/$(FROST_TOOLS_PREFIX)materialc$(if $(filter windows,$(OS)),.exe)"
 
-MESHES := cube orb
-TEXTURES := stone-color stone-normal parameters mask
+MESHES := cube orb orb-shadow1 orb-shadow2 orb-shadow3
+TEXTURES := stone-color stone-normal parameters mask moon
 MATERIALS := stone metal masked emissive floor
 ASSETS := $(addprefix ../runtime/,$(addsuffix .bin,$(MESHES) $(TEXTURES) $(MATERIALS)))
 
@@ -27,11 +27,12 @@ $(addprefix ../runtime/,$(addsuffix .bin,$(MATERIALS))): ../runtime/%.bin: %.ass
 	$(MATERIALC) -f "$<" -o "$@"
 
 ../runtime/cube.bin: cube.obj
-../runtime/orb.bin: orb.obj stone.asset metal.asset
+../runtime/orb.bin ../runtime/orb-shadow1.bin ../runtime/orb-shadow2.bin ../runtime/orb-shadow3.bin: orb.obj stone.asset metal.asset
 ../runtime/stone-color.bin: parallax-d.png
 ../runtime/stone-normal.bin: parallax-n.png
 ../runtime/parameters.bin: parameters.tga
 ../runtime/mask.bin: texture-alpha-test.png
+../runtime/moon.bin: moon.jpg
 ../runtime/stone.bin: stone-color.asset stone-normal.asset parameters.asset
 ../runtime/masked.bin: mask.asset
 ../runtime/emissive.bin: stone-color.asset

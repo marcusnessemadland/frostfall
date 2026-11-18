@@ -31,6 +31,7 @@ namespace frost
 			, repeatAt(_other.repeatAt), repeatDirection(_other.repeatDirection)
 		{
 			memCopy(graphicsStats, _other.graphicsStats, sizeof(graphicsStats));
+			memCopy(moonStats, _other.moonStats, sizeof(moonStats));
 			entries = frost::move(_other.entries);
 			rows = frost::move(_other.rows);
 		}
@@ -38,7 +39,7 @@ namespace frost
 		Entity canvas, panel, title, separator, list;
 		Entity current, editing, editingTarget;
 		Entity frameTime, fps, frames, entities, dimensions, focus;
-		Entity debugView, graphicsStats[10];
+		Entity debugView, graphicsStats[18], moonStats[4];
 		DynamicStorageT<DevmenuEntry> entries;
 		DynamicStorageT<Entity> rows;
 		uint32_t count = 0, rowCount = 0;
@@ -165,6 +166,44 @@ namespace frost
 			devmenuValue(_world, sky, "Sun intensity", DevmenuFloatComponent{ 0, 0, 100, 0.1, 2 }, 5,
 				devmenuComponent<&SkyComponent::sunIntensity>({}));
 
+			const Entity moon = devmenuFolder(_world, _menu->graphics, "Moon", 7);
+			_world.insert(moon, DevmenuTargetComponent{ DevmenuTargetComponent::Sky });
+			devmenuValue(_world, moon, "Cycle (0 new, 0.5 full)", DevmenuFloatComponent{ 0, 0, 1, 0.025, 3 }, 0,
+				devmenuComponent<&SkyComponent::moonCycle>({}));
+			devmenuValue(_world, moon, "Pause cycle", DevmenuBoolComponent{}, 1,
+				devmenuComponent<&SkyComponent::pauseMoonCycle>({}));
+			devmenuValue(_world, moon, "Angular diameter (deg)", DevmenuFloatComponent{ 0, 0.01, 10, 0.05, 2 }, 2,
+				devmenuComponent<&SkyComponent::moonSize>({}));
+			devmenuValue(_world, moon, "Intensity", DevmenuFloatComponent{ 0, 0, 100, 0.1, 2 }, 3,
+				devmenuComponent<&SkyComponent::moonIntensity>({}));
+			const char* tintLabels[] = { "Tint R", "Tint G", "Tint B" };
+			for (uint8_t ii = 0; ii < 3; ++ii)
+			{
+				DevmenuBindingComponent binding = devmenuComponent<&SkyComponent::moonIntensity>({});
+				if (ii == 0)
+				{
+					binding.read = [](const World& _w, Entity _e) { return double(_w.get<SkyComponent>(_e)->moonTint.x); };
+					binding.write = [](World& _w, Entity _e, double _v) { _w.getMut<SkyComponent>(_e)->moonTint.x = float(_v); };
+				}
+				else if (ii == 1)
+				{
+					binding.read = [](const World& _w, Entity _e) { return double(_w.get<SkyComponent>(_e)->moonTint.y); };
+					binding.write = [](World& _w, Entity _e, double _v) { _w.getMut<SkyComponent>(_e)->moonTint.y = float(_v); };
+				}
+				else
+				{
+					binding.read = [](const World& _w, Entity _e) { return double(_w.get<SkyComponent>(_e)->moonTint.z); };
+					binding.write = [](World& _w, Entity _e, double _v) { _w.getMut<SkyComponent>(_e)->moonTint.z = float(_v); };
+				}
+				devmenuValue(_world, moon, tintLabels[ii], DevmenuFloatComponent{ 0, 0, 4, 0.05, 2 }, 4 + ii, binding);
+			}
+
+			const char* moonLabels[] = { "Illuminated surface (%)", "Elevation (deg)", "Direct illumination", "Shadow source" };
+			for (uint32_t ii = 0; ii < FROST_COUNTOF(moonLabels); ++ii)
+			{
+				_state->moonStats[ii] = devmenuReadout(_world, moon, moonLabels[ii], int32_t(7 + ii));
+			}
+
 			const Entity light = devmenuFolder(_world, _menu->graphics, "Directional light", 1);
 			_world.insert(light, DevmenuTargetComponent{ DevmenuTargetComponent::Light });
 			devmenuValue(_world, light, "Intensity", DevmenuFloatComponent{ 0, 0, 100, 0.1, 2 }, 0,
@@ -179,10 +218,11 @@ namespace frost
 			devmenuValue(_world, camera, "Exposure (stops)", DevmenuFloatComponent{ 0, -20, 20, 0.25, 2 }, 2,
 				devmenuComponent<&CameraComponent::exposure>({}));
 
+
 			const Entity output = devmenuFolder(_world, _menu->graphics, "Output", 3);
 			devmenuValue(_world, output, "Prevent banding", DevmenuBoolComponent{}, 0,
 				devmenuResource<&GraphicsResource::preventBanding>());
-			devmenuValue(_world, output, "Debug view (0-6)", DevmenuIntComponent{ 0, 0, GraphicsDebugView::Count - 1, 1 }, 1,
+			devmenuValue(_world, output, "Debug view", DevmenuIntComponent{ 0, 0, GraphicsDebugView::Count - 1, 1 }, 1,
 				devmenuResource<&GraphicsResource::debugView>());
 			_state->debugView = devmenuReadout(_world, output, "View", 2);
 			devmenuValue(_world, output, "Depth range", DevmenuFloatComponent{ 0, 0.1, 10000, 10, 1 }, 3,
@@ -191,11 +231,42 @@ namespace frost
 				devmenuResource<&GraphicsResource::gpuProfiling>());
 			const Entity statistics = devmenuFolder(_world, _menu->graphics, "Statistics", 4);
 			const char* labels[] = { "GPU (ms)", "Geometry (ms)", "Lighting (ms)", "Sky (ms)",
-				"Tone map (ms)", "Debug (ms)", "UI (ms)", "Draw calls", "Textures", "Targets (MiB)" };
+				"Tone map (ms)", "Debug (ms)", "UI (ms)", "Draw calls", "Textures", "Targets (MiB)",
+				"Environment update (ms)", "Shadow atlas (ms)",
+				"Cascade 0 casters", "Cascade 1 casters", "Cascade 2 casters", "Cascade 3 casters",
+				"Shadow draw calls", "Shadow triangles" };
 			for (uint32_t ii = 0; ii < FROST_COUNTOF(labels); ++ii)
 			{
 				_state->graphicsStats[ii] = devmenuReadout(_world, statistics, labels[ii], int32_t(ii));
 			}
+
+			const Entity environment = devmenuFolder(_world, _menu->graphics, "Environment", 5);
+			devmenuValue(_world, environment, "Intensity", DevmenuFloatComponent{ 0, 0, 10, 0.1, 2 }, 0,
+				devmenuResource<&EnvironmentResource::intensity>());
+			devmenuValue(_world, environment, "Update interval (s)", DevmenuFloatComponent{ 0, 0, 5, 0.05, 2 }, 1,
+				devmenuResource<&EnvironmentResource::updateInterval>());
+			const Entity shadows = devmenuFolder(_world, _menu->graphics, "Directional shadows", 6);
+			devmenuValue(_world, shadows, "Tile resolution", DevmenuIntComponent{ 0, 256, 4096, 256 }, 0,
+				devmenuResource<&SunShadowResource::resolution>());
+			devmenuValue(_world, shadows, "Distance", DevmenuFloatComponent{ 0, 0, 1000, 5, 1 }, 1,
+				devmenuResource<&SunShadowResource::distance>());
+			devmenuValue(_world, shadows, "Split lambda", DevmenuFloatComponent{ 0, 0, 1, 0.05, 2 }, 2,
+				devmenuResource<&SunShadowResource::splitLambda>());
+			devmenuValue(_world, shadows, "Caster distance", DevmenuFloatComponent{ 0, 0, 1000, 5, 1 }, 3,
+				devmenuResource<&SunShadowResource::casterDistance>());
+			devmenuValue(_world, shadows, "Depth bias", DevmenuFloatComponent{ 0, 0, 0.01, 0.0001, 4 }, 4,
+				devmenuResource<&SunShadowResource::depthBias>());
+			devmenuValue(_world, shadows, "Normal bias (texels)", DevmenuFloatComponent{ 0, 0, 5, 0.1, 2 }, 5,
+				devmenuResource<&SunShadowResource::normalBias>());
+			devmenuValue(_world, shadows, "Cascade blend", DevmenuFloatComponent{ 0, 0, 0.3, 0.01, 2 }, 6,
+				devmenuResource<&SunShadowResource::blend>());
+			devmenuValue(_world, shadows, "Filter radius", DevmenuFloatComponent{ 0, 0, 3, 0.25, 2 }, 7,
+				devmenuResource<&SunShadowResource::filterRadius>());
+
+			devmenuValue(_world, shadows, "Shadow LODs", DevmenuBoolComponent{}, 8,
+				devmenuResource<&SunShadowResource::lods>());
+			devmenuValue(_world, shadows, "Instancing", DevmenuBoolComponent{}, 9,
+				devmenuResource<&SunShadowResource::instancing>());
 
 			_state->canvas = _world.spawn(UiCanvasComponent{ _menu->scale, 1000, _menu->visible }).id();
 			_state->panel = _world.spawn(UiNodeComponent{}, UiLayoutComponent{ UiLayoutComponent::Column, 6, 2 },
@@ -227,7 +298,10 @@ namespace frost
 			{
 				const char* views[] = { "Scene", "Base color", "World normals", "Device depth",
 					"Linear depth", "World position", "HDR luminance",
-					"Metallic", "Roughness", "Occlusion", "Emissive" };
+					"Metallic", "Roughness", "Occlusion", "Emissive",
+					"Environment diffuse", "Environment specular", "Shadow cascades", "Shadow visibility",
+					"Shadow map 0", "Shadow map 1", "Shadow map 2", "Shadow map 3", "Shadow atlas",
+					"Lunar sky", "Moon direct light", "Moon disk" };
 				devmenuSetReadout(_world, _state.debugView, views[clamp(int32_t(graphics->debugView), 0, int32_t(FROST_COUNTOF(views) - 1))]);
 			}
 			if (const GraphicsStatsResource* stats = _world.getResource<GraphicsStatsResource>())
@@ -246,6 +320,21 @@ namespace frost
 				devmenuSetReadout(_world, _state.graphicsStats[8], buffer);
 				snprintf(buffer, sizeof(buffer), "%.2f", double(stats->renderTargetBytes) / (1024 * 1024));
 				devmenuSetReadout(_world, _state.graphicsStats[9], buffer);
+				if (stats->environmentMs >= 0) { snprintf(buffer, sizeof(buffer), "%.3f", stats->environmentMs); }
+				else { snprintf(buffer, sizeof(buffer), "Unavailable"); }
+				devmenuSetReadout(_world, _state.graphicsStats[10], buffer);
+				if (stats->shadowMs >= 0) { snprintf(buffer, sizeof(buffer), "%.3f", stats->shadowMs); }
+				else { snprintf(buffer, sizeof(buffer), "Unavailable"); }
+				devmenuSetReadout(_world, _state.graphicsStats[11], buffer);
+				for (uint32_t ii = 0; ii < 4; ++ii)
+				{
+					snprintf(buffer, sizeof(buffer), "%u", stats->shadowCasters[ii]);
+					devmenuSetReadout(_world, _state.graphicsStats[12 + ii], buffer);
+				}
+				snprintf(buffer, sizeof(buffer), "%u", stats->shadowDraws);
+				devmenuSetReadout(_world, _state.graphicsStats[16], buffer);
+				snprintf(buffer, sizeof(buffer), "%llu", (unsigned long long)stats->shadowTriangles);
+				devmenuSetReadout(_world, _state.graphicsStats[17], buffer);
 			}
 
 			// The first sky/light by entity ID and the explicitly active camera.
@@ -258,6 +347,20 @@ namespace frost
 			{
 				if (!_world.contains(targets[1]) || _entity.idx < targets[1].idx) { targets[1] = _entity; }
 			});
+			if (const SkyComponent* sky = _world.get<SkyComponent>(targets[0]))
+			{
+				snprintf(buffer, sizeof(buffer), "%.1f", sky->moonPhase * 100.0f);
+				devmenuSetReadout(_world, _state.moonStats[0], buffer);
+				snprintf(buffer, sizeof(buffer), "%.2f", sky->moonElevation);
+				devmenuSetReadout(_world, _state.moonStats[1], buffer);
+				snprintf(buffer, sizeof(buffer), "%.5f", sky->moonIlluminance);
+				devmenuSetReadout(_world, _state.moonStats[2], buffer);
+				const DirectionalLightComponent* light = _world.get<DirectionalLightComponent>(
+					_world.getResource<SunShadowResource>()->light);
+				devmenuSetReadout(_world, _state.moonStats[3], NULL == light ? "Disabled"
+					: (dot(normalize(light->direction), sky->moonLightDirection) > 0.99999f ? "Moon" : "Sun / other"));
+			}
+
 			targets[2] = _world.getResource<ActiveCameraResource>()->entity;
 			_world.query<Entity, const DevmenuTargetComponent&, DevmenuItemComponent&>().each(
 				[&](Entity _folder, const DevmenuTargetComponent& _target, DevmenuItemComponent& _item)

@@ -117,6 +117,10 @@ namespace frost
 		MeshHandle handle;
 		const MaterialHandle* materials = NULL; //!< Borrowed overrides indexed by mesh material slot.
 		uint16_t numMaterials = 0; //!< Keep the array and referenced materials alive while rendering.
+		bool castShadows = true; //!< Receives shadows regardless of this caster flag.
+		/// Optional coarser meshes for cascades 1-3, in the same material-slot order.
+		/// Borrows these handles. An unset entry keeps the previous cascade's mesh.
+		MeshHandle shadowLods[3];
 	};
 
 	/// World-space mesh transform. An absent component means identity.
@@ -135,9 +139,32 @@ namespace frost
 		float intensity = 1.0f;                //!< Nonnegative multiplier; zero disables the light.
 	};
 
+	/// One shadowed directional light for the active view. An unset entity disables shadows.
+	struct SunShadowResource
+	{
+		Entity light;
+		uint16_t resolution = 1024; //!< Tile size; the atlas is 4 * resolution by resolution.
+		float distance = 150.0f;
+		float splitLambda = 0.7f; //!< Blend uniform and logarithmic splits.
+		float casterDistance = 200.0f; //!< Include casters this far toward the light.
+		float depthBias = 0.0005f; //!< In normalized shadow depth.
+		float normalBias = 1.0f; //!< In cascade texels, scaled by surface slope.
+		float blend = 0.1f; //!< Fraction of each cascade reserved for transition.
+		float filterRadius = 1.0f; //!< PCF sample spacing in texels; zero gives a hard shadow.
+		bool lods = true;
+		bool instancing = true; //!< Batch compatible casters; falls back if instance storage is full.
+	};
+
+	/// One global environment, generated from the active procedural sky.
+	struct EnvironmentResource
+	{
+		float intensity = 1.0f;
+		float updateInterval = 0.25f; //!< Seconds between updates while the sky changes.
+	};
+
 	/// Procedural Perez atmosphere. Use one SkyComponent for the active view.
-	/// PreUpdate advances time and calculates sunlight; this component does not create a light.
-	/// Application Update systems can copy sunDirection and sunColor into a DirectionalLightComponent.
+	/// PreUpdate advances time and calculates sun and moon illumination; it does not create lights.
+	/// Application Update systems can copy sunDirection/sunColor and moonLightDirection/moonColor into lights.
 	struct SkyComponent
 	{
 		enum Month
@@ -156,11 +183,29 @@ namespace frost
 		Vec3 sunTint = { 1.0f, 1.0f, 1.0f }; //!< Linear RGB multiplier.
 		float sunIntensity = 1.0f;  //!< Multiplier for direct sunlight and sun disk.
 
+		float moonCycle = 0.5f;    //!< Synodic cycle [0, 1): new, waxing quarter, full, waning quarter.
+		bool pauseMoonCycle = false; //!< Freeze the phase while the sky clock advances.
+		float moonSize = 0.52f;    //!< Angular diameter in degrees.
+		float moonIntensity = 1.0f; //!< Multiplier for the disk, direct light, and lunar sky illumination.
+		Vec3 moonTint = { 1.0f, 1.0f, 1.0f }; //!< Linear RGB multiplier.
+		TextureHandle moonTexture; //!< Borrowed equirectangular albedo, longitude zero at image center.
+		float moonAlbedo = 1.0f;   //!< Mean linear albedo of the supplied map; used to normalize disk brightness.
+
 		/// Calculated during PreUpdate. Unit world direction toward the sun.
 		Vec3 sunDirection = { 0.0f, 1.0f, 0.0f };
 
 		/// Calculated linear RGB sunlight, including sunTint and sunIntensity.
 		Vec3 sunColor = { 0.0f, 0.0f, 0.0f };
+
+		Vec3 moonDirection = { 0.0f, -1.0f, 0.0f }; //!< Calculated direction toward the visible moon.
+		/// Calculated nighttime key direction, kept above the horizon for continuous shadows.
+		Vec3 moonLightDirection = { 0.0f, 1.0f, 0.0f };
+		Vec3 moonUp = { 0.0f, 1.0f, 0.0f }; //!< Calculated lunar north, perpendicular to moonDirection.
+		Vec3 moonColor = { 0.0f, 0.0f, 0.0f }; //!< Calculated linear RGB illumination, like sunColor.
+		float moonPhase = 1.0f; //!< Calculated fraction of the visible surface illuminated.
+		float moonIlluminance = 0.0f; //!< Calculated relative direct illumination, in the same scene units as sunlight.
+		float moonElevation = -90.0f; //!< Calculated altitude in degrees.
+		float moonPhaseBrightness = 1.0f; //!< Calculated phase-dependent disk radiance multiplier.
 	};
 
 	/// Create a mesh from a cooked asset after graphics startup. Always consumes
@@ -314,6 +359,9 @@ namespace frost
 		{
 			None, BaseColor, Normals, Depth, LinearDepth, WorldPosition, Luminance,
 			Metallic, Roughness, Occlusion, Emissive,
+			EnvironmentDiffuse, EnvironmentSpecular, Cascades, ShadowVisibility,
+			ShadowMap0, ShadowMap1, ShadowMap2, ShadowMap3,
+			ShadowAtlas, LunarSky, MoonLight, MoonDisk,
 			Count
 		};
 	};
@@ -324,6 +372,11 @@ namespace frost
 		double gpuMs = -1.0;
 		double geometryMs = -1.0, lightMs = -1.0, skyMs = -1.0;
 		double toneMapMs = -1.0, debugViewMs = -1.0, uiMs = -1.0;
+		double environmentMs = -1.0;
+		double shadowMs = -1.0; //!< Entire atlas pass, including all cascades.
+		uint32_t shadowCasters[4] = {}; //!< Logical primitive instances after cascade culling.
+		uint32_t shadowDraws = 0; //!< Actual submissions, after instancing.
+		uint64_t shadowTriangles = 0; //!< Includes every caster instance and cascade.
 		uint32_t draws = 0;
 		uint16_t textures = 0;
 		int64_t renderTargetBytes = 0;
