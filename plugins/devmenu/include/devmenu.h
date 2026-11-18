@@ -12,7 +12,7 @@
 
 namespace frost
 {
-	/// Parent items with World::setParent. Siblings sort by order, then entity ID.
+	///
 	struct DevmenuItemComponent
 	{
 		FixedString64 label;
@@ -20,22 +20,26 @@ namespace frost
 		bool visible = true;
 	};
 
-	struct DevmenuFolderComponent {};
+	///
+	struct DevmenuFolderComponent
+	{
+	};
 
-	/// activated is true for one update on the select press; pressed lasts until release.
-	/// Application Update systems can read these fields to implement actions.
+	///
 	struct DevmenuButtonComponent
 	{
 		bool activated = false;
 		bool pressed = false;
 	};
 
+	///
 	struct DevmenuBoolComponent
 	{
 		bool value = false;
 		bool readOnly = false;
 	};
 
+	///
 	struct DevmenuIntComponent
 	{
 		int32_t value = 0;
@@ -45,6 +49,7 @@ namespace frost
 		bool readOnly = false;
 	};
 
+	///
 	struct DevmenuFloatComponent
 	{
 		double value = 0.0;
@@ -55,15 +60,13 @@ namespace frost
 		bool readOnly = false;
 	};
 
+	/// TODO: I dont think the devmenu should have this, we should have a wrapper for bgfx::dbgPrint instead for these things
 	struct DevmenuReadoutComponent
 	{
 		FixedString256 text;
 	};
 
-	/// Optional live binding. Without one, the item's value component is the data.
-	/// Bindings resolve their target on each access, never retain ECS storage pointers.
-	/// A missing component/resource temporarily hides the item. Custom bindings may
-	/// supply these functions directly. Keep them free of structural ECS changes.
+	/// TODO: Is this really needed??
 	struct DevmenuBindingComponent
 	{
 		Entity target;
@@ -72,6 +75,7 @@ namespace frost
 		bool (*available)(const World&, Entity) = NULL;
 	};
 
+	// TODO: I dont know about this...
 	namespace detail
 	{
 		template<typename Ty> struct DevmenuMemberT;
@@ -83,7 +87,7 @@ namespace frost
 		};
 	}
 
-	/// Bind an integer, floating-point, enum or bool component member.
+	///
 	template<auto MemberT>
 	DevmenuBindingComponent devmenuComponent(Entity _entity)
 	{
@@ -97,7 +101,7 @@ namespace frost
 		};
 	}
 
-	/// Bind a public resource member. The resource must be present while the item is used.
+	/// 
 	template<auto MemberT>
 	DevmenuBindingComponent devmenuResource()
 	{
@@ -111,13 +115,14 @@ namespace frost
 		};
 	}
 
-	struct DevmenuResource
-	{
-		/// Optional application-owned container. Its children appear beside the built-in
-		/// folders at the menu root. Configure here, or replace it at runtime.
-		/// Devmenu never reparents or destroys this hierarchy.
-		Entity custom;
+} // namespace frost
 
+namespace frost
+{
+	/// Const device configuration read on startup.
+	///
+	struct DevmenuDesc
+	{
 		GamepadButton::Enum toggle = GamepadButton::Start;
 		GamepadButton::Enum up = GamepadButton::DpadUp;
 		GamepadButton::Enum down = GamepadButton::DpadDown;
@@ -132,16 +137,26 @@ namespace frost
 		float scale = 1.0f;
 		bool visible = false;
 
-		/// Populated during Startup. Applications may also parent items here.
-		Entity root;
-		Entity engine;
-		Entity device;
-		Entity graphics;
+		Entity root;     //!< Populated during Startup. Applications may also parent items here.
+		Entity engine;   //!< Populated during Startup. Applications may also parent items here.
+		Entity device;   //!< Populated during Startup. Applications may also parent items here.
+		Entity graphics; //!< Populated during Startup. Applications may also parent items here.
+		Entity custom;   //!< Applications may also parent items here.
 	};
 
-	/// Requires DevicePlugin and GraphicsPlugin. Draws through graphics UI components.
-	/// Never consumes gameplay input or pauses simulation. Select commits numeric edits;
-	/// Back restores the original value. Closing the menu cancels an unfinished edit.
+	/// Runtime devmenu configuration read every frame.
+	///
+	/// @remark Available after plugin is built.
+	///
+	struct DevmenuSettings
+	{
+	};
+
+	/// Creates the devmenu.
+	///
+	/// @remark Requires `DevicePlugin` and `GraphicsPlugin`.
+	/// @remark Insert `DevmenuDesc` before plugin is added to application.
+	///
 	struct DevmenuPlugin : PluginI
 	{
 		virtual void build(App& _app) override;

@@ -1,6 +1,6 @@
 /*
  * Copyright 2026-2027 Marcus Nesse Madland. All rights reserved.
- * License: See LICENSE in the project root.
+ * License: https://github.com/marcusnessemadland/bx/blob/main/LICENSE
  */
 
 #include <graphics.h>
@@ -68,7 +68,7 @@ int main(int _argc, const char* _argv[])
 		debugPrintf("Material requires a persistent GUID.\n");
 		return 1;
 	}
-	MaterialDesc desc;
+	MaterialCreate desc;
 	if (!readFactors(settings, "baseColor", desc.baseColor, 4)
 		|| !readFactors(settings, "emissive", &desc.emissive.x, 3)
 		|| !readFactors(settings, "emissiveStrength", &desc.emissiveStrength, 1)

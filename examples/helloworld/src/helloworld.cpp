@@ -86,15 +86,15 @@ int main(int _argc, const char* _argv[])
 	{
 		app.addPlugins<ExamplePlugin>();
 
-		app.insertResource<frost::DeviceResource>(
-			frost::DeviceResource{ "Frostfall Engine | Helloworld Example", width, height });
+		app.insertResource<frost::DeviceDesc>(
+			frost::DeviceDesc{ "Frostfall Engine | Helloworld Example", width, height });
 		app.addPlugins<frost::DevicePlugin>();
 
-		app.insertResource<frost::GraphicsResource>(
-			frost::GraphicsResource{ width, height, frost::RendererType::Count /*auto*/ });
+		app.insertResource<frost::GraphicsDesc>(
+			frost::GraphicsDesc{ width, height, frost::RendererType::Count /*auto*/ });
 		app.addPlugins<frost::GraphicsPlugin>();
 
-		app.insertResource<frost::DevmenuResource>();
+		app.insertResource<frost::DevmenuDesc>();
 		app.addPlugins<frost::DevmenuPlugin>();
 	}
 	app.run();

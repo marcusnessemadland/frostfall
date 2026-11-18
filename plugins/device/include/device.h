@@ -20,43 +20,27 @@ namespace frost
 			Default, //!< Default platform window handle convention.
 			Wayland, //!< Wayland surface and display handles.
 
-			Count //!< Number of handle conventions.
+			Count
 		};
 	};
 
 	/// Window handles and drawable dimensions maintained by DevicePlugin.
 	///
-	/// Handles are borrowed from and remain valid until the device shuts down.
+	/// @remark Handles are borrowed from and remain valid until the device shuts down.
 	///
 	struct DisplayResource
 	{
-		/// Borrowed internal window pointer.
-		///
 		void* window = NULL;
-
-		/// Platform window/surface handle supplied to the renderer.
-		///
 		void* nativeWindow = NULL;
-
-		/// Borrowed native display connection when required by the platform.
-		///
 		void* nativeDisplay = NULL;
-
-		/// Interpretation of nativeWindow and nativeDisplay.
-		///
 		NativeWindowHandleType::Enum nativeWindowHandleType = NativeWindowHandleType::Default;
-
-		/// Drawable framebuffer width in pixels.
-		///
 		uint32_t width = 0;
-
-		/// Drawable framebuffer height in pixels.
-		///
 		uint32_t height = 0;
 	};
 
 	/// Physical keyboard keys, independent of keyboard layout and input backend.
-	/// Letter names identify positions on a US keyboard; these codes are not text input.
+	///
+	/// @remark Letter names identify positions on a US keyboard; these codes are not text input.
 	///
 	struct Key
 	{
@@ -311,15 +295,15 @@ namespace frost
 			Call,
 			EndCall,
 
-			Count //!< Number of keyboard state slots.
+			Count
 		};
 	};
 
-	/// Flags used by InputResource::mouseButtons.
+	/// Flags for mouse keys.
 	///
 	struct MouseButton
 	{
-		enum Enum : uint32_t
+		enum Enum
 		{
 			None   = 0,
 			Left   = 1 << 0,
@@ -331,6 +315,7 @@ namespace frost
 	};
 
 	/// Standard gamepad buttons, independent of the input backend.
+	///
 	struct GamepadButton
 	{
 		enum Enum
@@ -355,17 +340,23 @@ namespace frost
 		};
 	};
 
-	/// One active gamepad. Sticks have a radial deadzone and range [-1, 1];
-	/// positive X is right and positive Y is down. Triggers range from 0 to 1.
+	/// One active gamepad.
+	///
+	/// @remark Sticks have a radial deadzone and range [-1, 1].
+	/// @remark Positive X is right and positive Y is down. Triggers range from 0 to 1.
+	///
 	struct GamepadState
 	{
 		bool connected = false;
+
 		float leftX = 0.0f;
 		float leftY = 0.0f;
 		float rightX = 0.0f;
 		float rightY = 0.0f;
+
 		float leftTrigger = 0.0f;
 		float rightTrigger = 0.0f;
+
 		bool buttons[GamepadButton::Count] = {};
 		bool pressed[GamepadButton::Count] = {};
 		bool released[GamepadButton::Count] = {};
@@ -373,54 +364,26 @@ namespace frost
 
 	/// Keyboard, mouse and gamepad state sampled during PreUpdate.
 	///
-	/// pressed, released, relative motion and wheel values are reset before event pumping.
+	/// @remark Pressed, released, relative motion and wheel values are reset before event pumping.
 	///
 	struct InputResource
 	{
 		GamepadState gamepad;
 
-		/// Number of physical keyboard keys.
-		///
-		static constexpr uint32_t kNumKeys = Key::Count;
+		bool keys[Key::Count] = {};
+		bool pressed[Key::Count] = {};
+		bool released[Key::Count] = {};
 
-		/// Held keyboard state indexed by Key::Enum. Unknown keys are ignored.
-		///
-		bool keys[kNumKeys] = {};
-
-		/// Keys newly pressed during the current event pump, indexed by Key::Enum.
-		///
-		bool pressed[kNumKeys] = {};
-
-		/// Keys released during the current event pump, indexed by Key::Enum.
-		///
-		bool released[kNumKeys] = {};
-
-		/// Held mouse buttons as a bitmask of MouseButton flags.
-		///
 		uint32_t mouseButtons = 0;
 
-		/// Whether the window currently has input focus.
-		///
 		bool focused = true;
 
-		/// Window-relative cursor X position.
-		///
 		int32_t mouseX = 0;
-
-		/// Window-relative cursor Y position.
-		///
 		int32_t mouseY = 0;
 
-		/// Accumulated horizontal motion this frame.
-		///
 		int32_t mouseDeltaX = 0;
-
-		/// Accumulated vertical motion this frame.
-		///
 		int32_t mouseDeltaY = 0;
 
-		/// Accumulated vertical wheel steps this frame.
-		///
 		int32_t wheel = 0;
 	};
 
@@ -428,27 +391,27 @@ namespace frost
 
 namespace frost
 {
-	/// Initial device configuration, read during Startup.
+	/// Const device configuration read on startup.
 	///
-	struct DeviceResource
+	struct DeviceDesc
 	{
-		/// Window title, read during Startup.
-		///
-		const char* title = "frost";
+		const char* title = "frost"; //!< Window title, read during Startup.
+		uint32_t width = 1280; 		 //!< Initial window width in screen coordinates.
+		uint32_t height = 720; 		 //!< Initial window height in screen coordinates.
+	};
 
-		/// Initial window width in screen coordinates.
-		///
-		uint32_t width = 1280;
-
-		/// Initial window height in screen coordinates.
-		///
-		uint32_t height = 720;
+	/// Runtime device configuration read every frame.
+	///
+	/// @remark Available after plugin is built.
+	///
+	struct DeviceSettings
+	{
+		// TODO:
 	};
 
 	/// Creates the window and registers device/input resources and systems.
 	///
-	/// Adds DisplayResource and InputResource. Startup creates the window, PreUpdate pumps
-	/// events, and PostShutdown releases the gamepad, window and SDL state.
+	/// @remark Insert `DeviceDesc` before plugin is added to application.
 	///
 	struct DevicePlugin : PluginI
 	{

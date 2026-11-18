@@ -132,7 +132,7 @@ namespace frost
 
 	struct DevmenuSystem
 	{
-		static void startup(World& _world, ResMutT<DevmenuResource> _menu, ResMutT<DevmenuState> _state)
+		static void startup(World& _world, ResMutT<DevmenuDesc> _menu, ResMutT<DevmenuState> _state)
 		{
 			_state->entries.setAllocator(_world.getAllocator());
 			_state->rows.setAllocator(_world.getAllocator());
@@ -221,14 +221,14 @@ namespace frost
 
 			const Entity output = devmenuFolder(_world, _menu->graphics, "Output", 3);
 			devmenuValue(_world, output, "Prevent banding", DevmenuBoolComponent{}, 0,
-				devmenuResource<&GraphicsResource::preventBanding>());
+				devmenuResource<&GraphicsDesc::preventBanding>());
 			devmenuValue(_world, output, "Debug view", DevmenuIntComponent{ 0, 0, GraphicsDebugView::Count - 1, 1 }, 1,
-				devmenuResource<&GraphicsResource::debugView>());
+				devmenuResource<&GraphicsDesc::debugView>());
 			_state->debugView = devmenuReadout(_world, output, "View", 2);
 			devmenuValue(_world, output, "Depth range", DevmenuFloatComponent{ 0, 0.1, 10000, 10, 1 }, 3,
-				devmenuResource<&GraphicsResource::debugDepth>());
+				devmenuResource<&GraphicsDesc::debugDepth>());
 			devmenuValue(_world, output, "GPU profiling", DevmenuBoolComponent{}, 4,
-				devmenuResource<&GraphicsResource::gpuProfiling>());
+				devmenuResource<&GraphicsDesc::gpuProfiling>());
 			const Entity statistics = devmenuFolder(_world, _menu->graphics, "Statistics", 4);
 			const char* labels[] = { "GPU (ms)", "Geometry (ms)", "Lighting (ms)", "Sky (ms)",
 				"Tone map (ms)", "Debug (ms)", "UI (ms)", "Draw calls", "Textures", "Targets (MiB)",
@@ -294,7 +294,7 @@ namespace frost
 			snprintf(buffer, sizeof(buffer), "%u x %u", _display.width, _display.height);
 			devmenuSetReadout(_world, _state.dimensions, buffer);
 			devmenuSetReadout(_world, _state.focus, _input.focused ? "Yes" : "No");
-			if (const GraphicsResource* graphics = _world.getResource<GraphicsResource>())
+			if (const GraphicsDesc* graphics = _world.getResource<GraphicsDesc>())
 			{
 				const char* views[] = { "Scene", "Base color", "World normals", "Device depth",
 					"Linear depth", "World position", "HDR luminance",
@@ -386,14 +386,14 @@ namespace frost
 			});
 		}
 
-		static void goBack(World& _world, const DevmenuResource& _menu, DevmenuState& _state)
+		static void goBack(World& _world, const DevmenuDesc& _menu, DevmenuState& _state)
 		{
 			const Entity parent = _world.getParent(_state.current);
 			_state.current = parent == _menu.custom || !_world.contains(parent) ? _menu.root : parent;
 		}
 
 		static int32_t direction(const InputResource& _input, const TimeResource& _time,
-			const DevmenuResource& _menu, DevmenuState& _state)
+			const DevmenuDesc& _menu, DevmenuState& _state)
 		{
 			const int32_t held = int32_t(_input.gamepad.buttons[_menu.up]) - int32_t(_input.gamepad.buttons[_menu.down]);
 			const int32_t pressed = int32_t(_input.gamepad.pressed[_menu.up]) - int32_t(_input.gamepad.pressed[_menu.down]);
@@ -418,7 +418,7 @@ namespace frost
 			return 0;
 		}
 
-		static void input(World& _world, DevmenuResource& _menu, DevmenuState& _state,
+		static void input(World& _world, DevmenuDesc& _menu, DevmenuState& _state,
 			const InputResource& _input, const TimeResource& _time)
 		{
 			_world.query<DevmenuButtonComponent&>().each([&](DevmenuButtonComponent& _button)
@@ -522,7 +522,7 @@ namespace frost
 		}
 
 		static void row(World& _world, Entity _row, Entity _item, bool _back, bool _selected,
-			const DevmenuResource& _menu, const DevmenuState& _state, const TimeResource& _time)
+			const DevmenuDesc& _menu, const DevmenuState& _state, const TimeResource& _time)
 		{
 			UiTextComponent& text = *_world.getMut<UiTextComponent>(_row);
 			text.height = _menu.textHeight;
@@ -559,7 +559,7 @@ namespace frost
 			text.text.set(buffer);
 		}
 
-		static void draw(World& _world, const DevmenuResource& _menu, DevmenuState& _state,
+		static void draw(World& _world, const DevmenuDesc& _menu, DevmenuState& _state,
 			const DisplayResource& _display, const TimeResource& _time)
 		{
 			UiCanvasComponent& canvas = *_world.getMut<UiCanvasComponent>(_state.canvas);
@@ -616,7 +616,7 @@ namespace frost
 			separator.width = _menu.width - 12; separator.height = 1;
 		}
 
-		static void update(World& _world, ResMutT<DevmenuResource> _menu, ResMutT<DevmenuState> _state,
+		static void update(World& _world, ResMutT<DevmenuDesc> _menu, ResMutT<DevmenuState> _state,
 			ResT<TimeResource> _time, ResT<InputResource> _input, ResT<DisplayResource> _display)
 		{
 			refresh(_world, *_time, *_input, *_display, *_state);
@@ -624,7 +624,7 @@ namespace frost
 			draw(_world, *_menu, *_state, *_display, *_time);
 		}
 
-		static void shutdown(World& _world, ResMutT<DevmenuResource> _menu, ResMutT<DevmenuState> _state)
+		static void shutdown(World& _world, ResMutT<DevmenuDesc> _menu, ResMutT<DevmenuState> _state)
 		{
 			devmenuCancel(_world, *_state);
 			_world.despawn(_state->canvas);
@@ -635,7 +635,7 @@ namespace frost
 
 	void DevmenuPlugin::build(App& _app)
 	{
-		_app.getWorld().initResource<DevmenuResource>();
+		_app.getWorld().initResource<DevmenuDesc>();
 		_app.getWorld().initResource<DevmenuState>();
 		_app.addSystems(EcsStage::Startup, DevmenuSystem::startup);
 		_app.addSystems(EcsStage::PreUpdate, DevmenuSystem::update);

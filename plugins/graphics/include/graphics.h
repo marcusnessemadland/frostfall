@@ -26,313 +26,16 @@ namespace frost
 	FROST_ERROR_RESULT(kErrorMaterialFormat, FROST_MAKEFOURCC('m', 't', 'f', 'm') );
 
 	constexpr uint32_t kAssetTypeMesh = FROST_MAKEFOURCC('M', 'E', 'S', 'H');
-	constexpr uint32_t kMeshVersion   = 2;
 	constexpr uint32_t kAssetTypeTexture = FROST_MAKEFOURCC('T', 'E', 'X', 'R');
 	constexpr uint32_t kAssetTypeMaterial = FROST_MAKEFOURCC('M', 'A', 'T', 'L');
-	constexpr uint32_t kTextureVersion = 1; // Little-endian TextureAssetFlags followed by DDS.
+
+	constexpr uint32_t kMeshVersion   = 2;
+	constexpr uint32_t kTextureVersion = 1;
 	constexpr uint32_t kMaterialVersion = 1;
-	constexpr uint32_t kMaterialPayloadSize = 96;
 
-	struct TextureAssetFlags
-	{
-		enum : uint32_t { Srgb = 0x1 };
-	};
+	constexpr uint32_t kMaterialPayloadSize = 96; // TODO: Should not be here
 
-	struct MaterialTexture
-	{
-		enum Enum { BaseColor, Normal, MetallicRoughness, Occlusion, Emissive, Count };
-	};
-
-	struct MaterialFlags
-	{
-		enum : uint32_t { Masked = 0x1, DoubleSided = 0x2 };
-	};
-
-	struct TextureSampler
-	{
-		enum : uint32_t
-		{
-			ClampU = 0x1, ClampV = 0x2, MirrorU = 0x4, MirrorV = 0x8,
-			Point = 0x10, Anisotropic = 0x20,
-		};
-	};
-
-	/// Linear factors. Color textures are sRGB; normal and parameter textures are linear.
-	/// Metallic-roughness uses G for roughness and B for metallic; occlusion uses R.
-	/// Tangent-space normal maps use +Y, with reconstructed positive Z.
-	/// Material v1 stores 12 float factors, u32 flags, float cutoff, then five
-	/// (u32 dependency index or UINT32_MAX, u32 sampler flags) pairs. Do not write this struct.
-	struct MaterialDesc
-	{
-		float baseColor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-		Vec3 emissive = { 0.0f, 0.0f, 0.0f };
-		float emissiveStrength = 1.0f;
-		float metallic = 0.0f;
-		float roughness = 1.0f;
-		float normalScale = 1.0f;
-		float occlusionStrength = 1.0f;
-		uint32_t flags = 0;
-		float alphaCutoff = 0.5f;
-		TextureHandle textures[MaterialTexture::Count];
-		uint32_t samplers[MaterialTexture::Count] = {};
-	};
-
-	/// Creation consumes _mem even on failure, and returns one owned reference.
-	/// Call on the application thread after graphics startup, like createMesh.
-	TextureHandle createTexture(const Memory* _mem, Error* _err = ErrorIgnore{});
-	MaterialHandle createMaterial(const MaterialDesc& _desc, Error* _err = ErrorIgnore{});
-
-	/// Resolved textures are in asset dependency-table order. The material retains them.
-	MaterialHandle createMaterial(const Memory* _mem, const TextureHandle* _textures, uint16_t _numTextures,
-		Error* _err = ErrorIgnore{});
-	void addRef(TextureHandle _handle);
-	void addRef(MaterialHandle _handle);
-	void release(TextureHandle _handle);
-	void release(MaterialHandle _handle);
-
-	/// Resolved default materials are in dependency-table order. The mesh retains them.
-	MeshHandle createMesh(const Memory* _mem, const MaterialHandle* _materials, uint16_t _numMaterials,
-		Error* _err = ErrorIgnore{});
-	uint16_t getMeshMaterialCount(MeshHandle _handle);
-	/// The returned name borrows storage from the live mesh.
-	StringView getMeshMaterialName(MeshHandle _handle, uint16_t _slot);
-
-	/// Mesh v2: group count (u32), material-slot count (u16), then slots
-	/// (u16 name length, name bytes, u32 dependency index or UINT32_MAX), then groups.
-	/// Each group contains bounds, vertex layout, counts/flags, material slot (u16),
-	/// primitive count (u16), buffers and primitive ranges. Scalars are little endian.
-	struct MeshFormat
-	{
-		enum : uint32_t
-		{
-			VertexCompressed = 0x1,
-			IndexCompressed  = 0x2,
-			Index32          = 0x4,
-		};
-	};
-
-	/// Mesh instance. Borrows the handle; copies and removal do not change ownership.
-	struct MeshComponent
-	{
-		MeshHandle handle;
-		const MaterialHandle* materials = NULL; //!< Borrowed overrides indexed by mesh material slot.
-		uint16_t numMaterials = 0; //!< Keep the array and referenced materials alive while rendering.
-		bool castShadows = true; //!< Receives shadows regardless of this caster flag.
-		/// Optional coarser meshes for cascades 1-3, in the same material-slot order.
-		/// Borrows these handles. An unset entry keeps the previous cascade's mesh.
-		MeshHandle shadowLods[3];
-	};
-
-	/// World-space mesh transform. An absent component means identity.
-	struct TransformComponent
-	{
-		Vec3 position = { 0.0f, 0.0f, 0.0f };
-		Quaternion rotation = { 0.0f, 0.0f, 0.0f, 1.0f };
-		Vec3 scale = { 1.0f, 1.0f, 1.0f };
-	};
-
-	/// Directional illumination, independent of any sky.
-	struct DirectionalLightComponent
-	{
-		Vec3 direction = { 0.0f, 1.0f, 0.0f }; //!< World direction toward the light; must be finite and nonzero.
-		Vec3 color = { 1.0f, 1.0f, 1.0f };      //!< Linear RGB illumination, clamped nonnegative.
-		float intensity = 1.0f;                //!< Nonnegative multiplier; zero disables the light.
-	};
-
-	/// One shadowed directional light for the active view. An unset entity disables shadows.
-	struct SunShadowResource
-	{
-		Entity light;
-		uint16_t resolution = 1024; //!< Tile size; the atlas is 4 * resolution by resolution.
-		float distance = 150.0f;
-		float splitLambda = 0.7f; //!< Blend uniform and logarithmic splits.
-		float casterDistance = 200.0f; //!< Include casters this far toward the light.
-		float depthBias = 0.002f; //!< In normalized shadow depth.
-		float normalBias = 1.0f; //!< In cascade texels, scaled by surface slope.
-		float blend = 0.1f; //!< Fraction of each cascade reserved for transition.
-		float filterRadius = 1.0f; //!< PCF sample spacing in texels; zero gives a hard shadow.
-		bool lods = true;
-		bool instancing = true; //!< Batch compatible casters; falls back if instance storage is full.
-	};
-
-	/// One global environment, generated from the active procedural sky.
-	struct EnvironmentResource
-	{
-		float intensity = 1.0f;
-		float updateInterval = 0.25f; //!< Seconds between updates while the sky changes.
-	};
-
-	/// Procedural Perez atmosphere. Use one SkyComponent for the active view.
-	/// PreUpdate advances time and calculates sun and moon illumination; it does not create lights.
-	/// Application Update systems can copy sunDirection/sunColor and moonLightDirection/moonColor into lights.
-	struct SkyComponent
-	{
-		enum Month
-		{
-			January, February, March, April, May, June,
-			July, August, September, October, November, December,
-		};
-
-		float time = 12.0f;         //!< Hours, wrapped into [0, 24).
-		float hps = 0.0f;			//!< Sky hours per second;
-		Month month = June;
-		float latitude = 50.0f;     //!< Degrees, north positive.
-		float turbidity = 2.15f;    //!< Atmospheric haziness, [1.9, 10].
-		float sunSize = 0.02f;
-		float sunBloom = 3.0f;
-		Vec3 sunTint = { 1.0f, 1.0f, 1.0f }; //!< Linear RGB multiplier.
-		float sunIntensity = 1.0f;  //!< Multiplier for direct sunlight and sun disk.
-
-		float moonCycle = 0.5f;    //!< Synodic cycle [0, 1): new, waxing quarter, full, waning quarter.
-		bool pauseMoonCycle = false; //!< Freeze the phase while the sky clock advances.
-		float moonSize = 0.52f;    //!< Angular diameter in degrees.
-		float moonIntensity = 1.0f; //!< Multiplier for the disk, direct light, and lunar sky illumination.
-		Vec3 moonTint = { 1.0f, 1.0f, 1.0f }; //!< Linear RGB multiplier.
-		TextureHandle moonTexture; //!< Borrowed equirectangular albedo, longitude zero at image center.
-		float moonAlbedo = 1.0f;   //!< Mean linear albedo of the supplied map; used to normalize disk brightness.
-
-		/// Calculated during PreUpdate. Unit world direction toward the sun.
-		Vec3 sunDirection = { 0.0f, 1.0f, 0.0f };
-
-		/// Calculated linear RGB sunlight, including sunTint and sunIntensity.
-		Vec3 sunColor = { 0.0f, 0.0f, 0.0f };
-
-		Vec3 moonDirection = { 0.0f, -1.0f, 0.0f }; //!< Calculated direction toward the visible moon.
-		/// Calculated nighttime key direction, kept above the horizon for continuous shadows.
-		Vec3 moonLightDirection = { 0.0f, 1.0f, 0.0f };
-		Vec3 moonUp = { 0.0f, 1.0f, 0.0f }; //!< Calculated lunar north, perpendicular to moonDirection.
-		Vec3 moonColor = { 0.0f, 0.0f, 0.0f }; //!< Calculated linear RGB illumination, like sunColor.
-		float moonPhase = 1.0f; //!< Calculated fraction of the visible surface illuminated.
-		float moonIlluminance = 0.0f; //!< Calculated relative direct illumination, in the same scene units as sunlight.
-		float moonElevation = -90.0f; //!< Calculated altitude in degrees.
-		float moonPhaseBrightness = 1.0f; //!< Calculated phase-dependent disk radiance multiplier.
-	};
-
-	/// Create a mesh from a cooked asset after graphics startup. Always consumes
-	/// _mem, including on failure. Returns one owned reference, or an invalid handle.
-	/// MeshComponent instances borrow this reference; component copies and removal
-	/// do not change its count. Call on the application thread.
-	MeshHandle createMesh(const Memory* _mem, Error* _err = ErrorIgnore{});
-
-	/// Retain one reference to a live mesh. Handle copies do not retain it.
-	void addRef(MeshHandle _handle);
-
-	/// Release one reference. Zero releases the mesh and its GPU buffers.
-	/// An invalid handle is ignored. Release owned references before graphics stops.
-	void release(MeshHandle _handle);
-
-	struct CameraProjection
-	{
-		enum Enum
-		{
-			Perspective,
-			Orthographic,
-
-			Count
-		};
-	};
-
-	/// Camera pose and projection. Aspect ratio follows the drawable dimensions.
 	///
-	struct CameraComponent
-	{
-		/// World position and unit orientation. Identity looks along +Z, with +Y up.
-		///
-		Vec3 position = { 0.0f, 0.0f, 0.0f };
-		Quaternion rotation = { 0.0f, 0.0f, 0.0f, 1.0f };
-
-		CameraProjection::Enum projection = CameraProjection::Perspective;
-
-		/// Vertical field of view in degrees, used by perspective projection.
-		///
-		float fov = 90.0f;
-
-		/// Visible vertical span in world units, used by orthographic projection.
-		///
-		float orthographicHeight = 10.0f;
-
-		/// Clipping distances. Require 0 < nearPlane < farPlane.
-		///
-		float nearPlane = 0.1f;
-		float farPlane = 1000.0f;
-
-		/// Manual exposure in stops. Increasing by one doubles image brightness.
-		float exposure = -3.0f;
-	};
-
-	/// Renderer camera selection. Assign another camera entity to switch views.
-	/// An unset, stale, or non-camera entity disables scene rendering.
-	///
-	struct ActiveCameraResource
-	{
-		Entity entity;
-	};
-
-} // namespace frost
-
-namespace frost
-{
-	/// Screen-space UI root. Coordinates are drawable pixels divided by scale.
-	/// Children use the normal ECS hierarchy; higher layers draw last.
-	struct UiCanvasComponent
-	{
-		float scale = 1.0f;
-		int32_t layer = 0;
-		bool visible = true;
-	};
-
-	/// Rectangle relative to its parent. Zero dimensions measure text/layout content.
-	/// Anchors and pivots are fractions of the parent and own dimensions respectively.
-	/// A canvas without a node fills the drawable area. Hidden nodes hide their subtree.
-	struct UiNodeComponent
-	{
-		float x = 0.0f;
-		float y = 0.0f;
-		float width = 0.0f;
-		float height = 0.0f;
-		float anchorX = 0.0f;
-		float anchorY = 0.0f;
-		float pivotX = 0.0f;
-		float pivotY = 0.0f;
-		bool visible = true;
-		bool clip = false;
-		int32_t order = 0; //!< Sibling order; entity ID breaks ties.
-	};
-
-	struct UiLayoutComponent
-	{
-		enum Direction { Column, Row };
-		Direction direction = Column;
-		float padding = 0.0f;
-		float spacing = 0.0f;
-	};
-
-	/// UI colors are packed 0xRRGGBBAA, with straight alpha.
-	struct UiRectComponent
-	{
-		uint32_t color = 0xffffffff;
-		uint32_t outlineColor = 0x000000ff;
-		float outlineWidth = 0.0f;
-	};
-
-	/// Owned text using the built-in 8x8 bitmap font. Supports ASCII and newlines.
-	/// Height also sets the monospaced glyph width. Font assets can extend this later.
-	struct UiTextComponent
-	{
-		FixedString1024 text;
-		uint32_t color = 0xffffffff;
-		float height = 16.0f;
-	};
-
-	struct UiProgressBarComponent
-	{
-		float value = 0.0f;
-		float minimum = 0.0f;
-		float maximum = 1.0f;
-		uint32_t backgroundColor = 0x303030ff;
-		uint32_t fillColor = 0x80c0ffff;
-	};
-
 	struct RendererType
 	{
 		enum Enum
@@ -353,63 +56,395 @@ namespace frost
 		};
 	};
 
-	struct GraphicsDebugView
+	///
+	struct CameraProjection
 	{
 		enum Enum
 		{
-			None, BaseColor, Normals, Depth, LinearDepth, WorldPosition, Luminance,
-			Metallic, Roughness, Occlusion, Emissive,
-			EnvironmentDiffuse, EnvironmentSpecular, Cascades, ShadowVisibility,
-			ShadowMap0, ShadowMap1, ShadowMap2, ShadowMap3,
-			ShadowAtlas, LunarSky, MoonLight, MoonDisk,
+			Perspective,
+			Orthographic,
+
 			Count
 		};
 	};
 
+	///
+	struct GraphicsDebugView
+	{
+		enum Enum
+		{
+			None,
+			BaseColor,
+			Normals,
+			Depth,
+			LinearDepth,
+			WorldPosition,
+			Luminance,
+			Metallic,
+			Roughness,
+			Occlusion,
+			Emissive,
+			EnvironmentDiffuse,
+			EnvironmentSpecular,
+			Cascades,
+			ShadowVisibility,
+			ShadowMap0,
+			ShadowMap1,
+			ShadowMap2,
+			ShadowMap3,
+			ShadowAtlas,
+			LunarSky,
+			MoonLight,
+			MoonDisk,
+			Count
+		};
+	};
+
+	///
+	struct TextureAssetFlags
+	{
+		enum : uint32_t
+		{
+			Srgb = 0x1
+		};
+	};
+
+	///
+	struct MaterialTexture
+	{
+		enum Enum
+		{
+			BaseColor,
+			Normal,
+			MetallicRoughness,
+			Occlusion,
+			Emissive,
+
+			Count
+		};
+	};
+
+	///
+	struct MaterialFlags
+	{
+		enum : uint32_t
+		{
+			Masked = 0x1,
+			DoubleSided = 0x2
+		};
+	};
+
+	///
+	struct TextureSampler
+	{
+		enum : uint32_t
+		{
+			ClampU = 0x1,
+			ClampV = 0x2,
+			MirrorU = 0x4,
+			MirrorV = 0x8,
+			Point = 0x10,
+			Anisotropic = 0x20,
+		};
+	};
+
+	///
+	struct MeshFormat
+	{
+		enum : uint32_t
+		{
+			VertexCompressed = 0x1,
+			IndexCompressed  = 0x2,
+			Index32          = 0x4,
+		};
+	};
+
+	///
+	struct MaterialCreate
+	{
+		float baseColor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+		Vec3 emissive = { 0.0f, 0.0f, 0.0f };
+		float emissiveStrength = 1.0f;
+		float metallic = 0.0f;
+		float roughness = 1.0f;
+		float normalScale = 1.0f;
+		float occlusionStrength = 1.0f;
+		uint32_t flags = 0;
+		float alphaCutoff = 0.5f;
+		TextureHandle textures[MaterialTexture::Count];
+		uint32_t samplers[MaterialTexture::Count] = {};
+	};
+
+	///
+	struct MeshComponent
+	{
+		MeshHandle handle;
+		const MaterialHandle* materials = NULL;
+		uint16_t numMaterials = 0;
+		bool castShadows = true;
+		MeshHandle shadowLods[3];
+	};
+
+	///
+	struct TransformComponent
+	{
+		Vec3 position = { 0.0f, 0.0f, 0.0f };
+		Quaternion rotation = { 0.0f, 0.0f, 0.0f, 1.0f };
+		Vec3 scale = { 1.0f, 1.0f, 1.0f };
+	};
+
+	///
+	struct DirectionalLightComponent
+	{
+		Vec3 direction = { 0.0f, 1.0f, 0.0f }; //!< World direction toward the light; must be finite and nonzero.
+		Vec3 color = { 1.0f, 1.0f, 1.0f };     //!< Linear RGB illumination, clamped nonnegative.
+		float intensity = 1.0f;						 //!< Nonnegative multiplier; zero disables the light.
+	};
+
+	/// TODO: Bloat and also maybe call it direct shadows and in the future local shadows for points lights etc.
+	struct SunShadowResource
+	{
+		Entity light;
+		uint16_t resolution = 1024;
+		float distance = 150.0f;
+		float splitLambda = 0.7f;
+		float casterDistance = 200.0f;
+		float depthBias = 0.002f;
+		float normalBias = 1.0f;
+		float blend = 0.1f;
+		float filterRadius = 1.0f;
+		bool lods = true;
+		bool instancing = true;
+	};
+
+	///
+	struct EnvironmentResource
+	{
+		float intensity = 1.0f;
+		float updateInterval = 0.25f; //!< TODO: Lets do every frame?
+	};
+
+	/// TODO: This is bloated with data
+	struct SkyComponent
+	{
+		enum Month
+		{
+			January,
+			February,
+			March,
+			April,
+			May,
+			June,
+			July,
+			August,
+			September,
+			October,
+			November,
+			December,
+		};
+		float time = 12.0f;
+		float hps = 0.0f;
+		Month month = June;
+		float latitude = 50.0f;
+		float turbidity = 2.15f;
+		float sunSize = 0.03f;
+		float sunBloom = 3.0f;
+		Vec3 sunTint = { 1.0f, 1.0f, 1.0f };
+		float sunIntensity = 1.0f;
+		float moonCycle = 0.5f;
+		bool pauseMoonCycle = false;
+		float moonSize = 0.52f;
+		float moonIntensity = 1.0f;
+		Vec3 moonTint = { 1.0f, 1.0f, 1.0f };
+		TextureHandle moonTexture;
+		float moonAlbedo = 1.0f;
+		Vec3 sunDirection = { 0.0f, 1.0f, 0.0f };
+		Vec3 sunColor = { 0.0f, 0.0f, 0.0f };
+		Vec3 moonDirection = { 0.0f, -1.0f, 0.0f };
+		Vec3 moonLightDirection = { 0.0f, 1.0f, 0.0f };
+		Vec3 moonUp = { 0.0f, 1.0f, 0.0f };
+		Vec3 moonColor = { 0.0f, 0.0f, 0.0f };
+		float moonPhase = 1.0f;
+		float moonIlluminance = 0.0f;
+		float moonElevation = -90.0f;
+		float moonPhaseBrightness = 1.0f;
+	};
+
+	///
+	struct CameraComponent
+	{
+		Vec3 position = { 0.0f, 0.0f, 0.0f };
+		Quaternion rotation = { 0.0f, 0.0f, 0.0f, 1.0f };
+		CameraProjection::Enum projection = CameraProjection::Perspective;
+		float fov = 90.0f;
+		float orthographicHeight = 10.0f;
+		float nearPlane = 0.1f;
+		float farPlane = 1000.0f;
+		float exposure = -3.0f;
+	};
+
+	/// TODO: Lets see if this can be improved?
+	struct ActiveCameraResource
+	{
+		Entity entity;
+	};
+
+	///
+	struct UiCanvasComponent
+	{
+		float scale = 1.0f;
+		int32_t layer = 0;
+		bool visible = true;
+	};
+
+	///
+	struct UiNodeComponent
+	{
+		float x = 0.0f;
+		float y = 0.0f;
+		float width = 0.0f;
+		float height = 0.0f;
+		float anchorX = 0.0f;
+		float anchorY = 0.0f;
+		float pivotX = 0.0f;
+		float pivotY = 0.0f;
+		bool visible = true;
+		bool clip = false;
+		int32_t order = 0;
+	};
+
+	///
+	struct UiLayoutComponent
+	{
+		enum Direction
+		{
+			Column,
+			Row
+		};
+		Direction direction = Column;
+		float padding = 0.0f;
+		float spacing = 0.0f;
+	};
+
+	///
+	struct UiRectComponent
+	{
+		uint32_t color = 0xffffffff;
+		uint32_t outlineColor = 0x000000ff;
+		float outlineWidth = 0.0f;
+	};
+
+	///
+	struct UiTextComponent
+	{
+		FixedString1024 text;
+		uint32_t color = 0xffffffff;
+		float height = 16.0f;
+	};
+
+	///
+	struct UiProgressBarComponent
+	{
+		float value = 0.0f;
+		float minimum = 0.0f;
+		float maximum = 1.0f;
+		uint32_t backgroundColor = 0x303030ff;
+		uint32_t fillColor = 0x80c0ffff;
+	};
+
 	/// Latest available bgfx measurements. Negative GPU times mean unavailable.
+	/// TODO: Bloat, bloat, bloat. Lets look into how to improve this
 	struct GraphicsStatsResource
 	{
 		double gpuMs = -1.0;
 		double geometryMs = -1.0, lightMs = -1.0, skyMs = -1.0;
 		double toneMapMs = -1.0, debugViewMs = -1.0, uiMs = -1.0;
 		double environmentMs = -1.0;
-		double shadowMs = -1.0; //!< Entire atlas pass, including all cascades.
-		uint32_t shadowCasters[4] = {}; //!< Logical primitive instances after cascade culling.
-		uint32_t shadowDraws = 0; //!< Actual submissions, after instancing.
-		uint64_t shadowTriangles = 0; //!< Includes every caster instance and cascade.
+		double shadowMs = -1.0;
+		uint32_t shadowCasters[4] = {};
+		uint32_t shadowDraws = 0;
+		uint64_t shadowTriangles = 0;
 		uint32_t draws = 0;
 		uint16_t textures = 0;
 		int64_t renderTargetBytes = 0;
 	};
 
-	struct GraphicsResource
+	///
+	MeshHandle createMesh(const Memory* _mem, const MaterialHandle* _materials, uint16_t _numMaterials, Error* _err = ErrorIgnore{});
+
+	///
+	MeshHandle createMesh(const Memory* _mem, Error* _err = ErrorIgnore{});
+
+	///
+	void addRef(MeshHandle _handle);
+
+	///
+	void release(MeshHandle _handle);
+
+	///
+	uint16_t getMeshMaterialCount(MeshHandle _handle);
+
+	///
+	StringView getMeshMaterialName(MeshHandle _handle, uint16_t _slot);
+
+	///
+	TextureHandle createTexture(const Memory* _mem, Error* _err = ErrorIgnore{});
+
+	///
+	void addRef(TextureHandle _handle);
+
+	///
+	void release(TextureHandle _handle);
+
+	///
+	MaterialHandle createMaterial(const MaterialCreate& _desc, Error* _err = ErrorIgnore{});
+
+	///
+	MaterialHandle createMaterial(const Memory* _mem, const TextureHandle* _textures, uint16_t _numTextures, Error* _err = ErrorIgnore{});
+
+	///
+	void addRef(MaterialHandle _handle);
+
+	///
+	void release(MaterialHandle _handle);
+
+} // namespace frost
+
+namespace frost
+{
+	/// Const graphics configuration read on startup.
+	///
+	struct GraphicsDesc
 	{
-		/// Initial render width in pixels.
-		///
-		uint32_t width = 1280;
+		uint32_t width = 1280; //!< Initial render width in pixels.
+		uint32_t height = 720; //!< Initial render height in pixels.
+		RendererType::Enum type = RendererType::Count; //!< Renderer backend graphics API .
 
-		/// Initial render height in pixels.
-		///
-		uint32_t height = 720;
-
-		/// Renderer backend graphics API .
-		///
-		RendererType::Enum type = RendererType::Count;
-
-		/// Maximum number of simultaneously loaded meshes.
-		///
 		/// TODO: Define macros for static arrays and make them synced with BGFX_CONFIG_ macros
-		///
 		uint16_t maxMeshes = 1024;
 		uint16_t maxTextures = 1024;
 		uint16_t maxMaterials = 1024;
 
+		// TODO: Should these be runtime settings?
 		GraphicsDebugView::Enum debugView = GraphicsDebugView::None;
-		float debugDepth = 100.0f; //!< View-space distance mapped to white in the linear depth view.
+		float debugDepth = 100.0f;
 		bool preventBanding = true;
 		bool gpuProfiling = true;
 	};
 
+	/// Runtime graphics configuration read every frame.
+	///
+	/// @remark Available after plugin is built.
+	///
+	struct GraphicsSettings
+	{
+	};
+
+	/// Creates the graphics api backend and handles rendering.
+	///
+	/// @remark Requires `DevicePlugin`.
+	/// @remark Insert `GraphicsDesc` before plugin is added to application.
+	///
 	struct GraphicsPlugin : PluginI
 	{
 		virtual void build(App& _app) override;

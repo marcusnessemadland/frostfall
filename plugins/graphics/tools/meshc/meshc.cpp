@@ -1,6 +1,6 @@
 /*
- * Copyright 2011-2026 Branimir Karadzic. All rights reserved.
- * License: https://github.com/bkaradzic/bgfx/blob/master/LICENSE
+ * Copyright 2026-2027 Marcus Nesse Madland. All rights reserved.
+ * License: https://github.com/marcusnessemadland/bx/blob/main/LICENSE
  */
 
 #include <algorithm>

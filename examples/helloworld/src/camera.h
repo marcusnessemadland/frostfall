@@ -65,7 +65,7 @@ namespace
 			  frost::ResT<frost::TimeResource> _time
 			, frost::ResT<frost::InputResource> _input
 			, frost::ResT<frost::ActiveCameraResource> _activeCamera
-			, frost::ResT<frost::DevmenuResource> _menu
+			, frost::ResT<frost::DevmenuDesc> _menu
 			, frost::QueryT<frost::CameraComponent&, CameraControllerComponent&> _cameras
 			, frost::QueryT<const frost::TransformComponent&> _transforms
 			)

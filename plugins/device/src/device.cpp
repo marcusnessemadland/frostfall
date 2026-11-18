@@ -4,6 +4,7 @@
  */
 
 #include <device.h>
+
 #include <frost/timer.h>
 #include <frost/os.h>
 #include <frost/math.h>
@@ -12,7 +13,7 @@
 
 namespace frost
 {
-	// Translate backend codes at the device boundary; public indices belong to Frost.
+	// TODO: Can this just do a static_cast instead? We trust frost::Key is a valid copy of SDL_Scancode no?
 	static Key::Enum toKey(SDL_Scancode _scancode)
 	{
 		switch (_scancode)
@@ -268,6 +269,7 @@ namespace frost
 		}
 	}
 
+	// TODO: Can this just do a static_cast instead? We trust frost::MouseButton is a valid copy of SDL_BUTTON no?
 	static uint32_t toMouseButton(uint8_t _button)
 	{
 		switch (_button)
@@ -395,8 +397,7 @@ namespace frost
 
 	struct SdlSystem
 	{
-		static void startup(ResT<DeviceResource> _device, ResMutT<DisplayResource> _display,
-			ResMutT<SdlControlResource> _control)
+		static void startup(ResT<DeviceDesc> _device, ResMutT<DisplayResource> _display, ResMutT<SdlControlResource> _control)
 		{
 			if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD))
 			{
@@ -420,12 +421,6 @@ namespace frost
 
 			// Platform initialization
 			initializeNativeWindow(_display, window);
-
-			if (NULL == _display->nativeWindow)
-			{
-				debugPrintf("SDL did not provide a native window handle: %s\n", SDL_GetError());
-				frost::exit(kExitFailure, false);
-			}
 		}
 
 		static void update(ResMutT<SdlControlResource> _control, ResMutT<DisplayResource> _display, ResMutT<InputResource> _input)
@@ -445,13 +440,16 @@ namespace frost
 			bool gamepadsChanged = false;
 			SDL_Event event;
 
+			// Poll events..
 			while (SDL_PollEvent(&event))
 			{
 				switch (event.type)
 				{
 					case SDL_EVENT_GAMEPAD_ADDED:
+					{
 						gamepadsChanged = true;
 						break;
+					}
 					case SDL_EVENT_GAMEPAD_REMOVED:
 					{
 						if (NULL != _control->gamepad
@@ -485,7 +483,6 @@ namespace frost
 						_control->app->exit();
 						break;
 					}
-
 					case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
 					{
 						if (event.window.windowID == windowId)
@@ -495,7 +492,6 @@ namespace frost
 
 						break;
 					}
-
 					case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
 					{
 						if (event.window.windowID == windowId)
@@ -506,7 +502,6 @@ namespace frost
 
 						break;
 					}
-
 					case SDL_EVENT_KEY_DOWN:
 					{
 						const Key::Enum key = toKey(event.key.scancode);
@@ -523,7 +518,6 @@ namespace frost
 
 						break;
 					}
-
 					case SDL_EVENT_KEY_UP:
 					{
 						const Key::Enum key = toKey(event.key.scancode);
@@ -536,32 +530,37 @@ namespace frost
 
 						break;
 					}
-
 					case SDL_EVENT_MOUSE_BUTTON_DOWN:
+					{
 						_input->mouseButtons |= toMouseButton(event.button.button);
 						break;
+					}
 					case SDL_EVENT_MOUSE_BUTTON_UP:
+					{
 						_input->mouseButtons &= ~toMouseButton(event.button.button);
 						break;
+					}
 					case SDL_EVENT_WINDOW_FOCUS_LOST:
+					{
 						_input->focused = false;
 						clearGamepad(_input->gamepad);
 						_input->mouseButtons = 0;
 						frost::memSet(_input->keys, 0, sizeof(_input->keys));
 						break;
+					}
 					case SDL_EVENT_WINDOW_FOCUS_GAINED:
+					{
 						_input->focused = true;
 						break;
+					}
 					case SDL_EVENT_MOUSE_MOTION:
 					{
 						_input->mouseDeltaX += ((int32_t)(event.motion.xrel));
 						_input->mouseDeltaY += ((int32_t)(event.motion.yrel));
 						_input->mouseX = ((int32_t)(event.motion.x));
 						_input->mouseY = ((int32_t)(event.motion.y));
-
 						break;
 					}
-
 					case SDL_EVENT_MOUSE_WHEEL:
 					{
 						_input->wheel += event.wheel.integer_y;
@@ -574,6 +573,7 @@ namespace frost
 			{
 				_control->gamepad = openGamepad();
 			}
+
 			GamepadState& gamepad = _input->gamepad;
 			gamepad.connected = NULL != _control->gamepad;
 			if (!gamepad.connected || !_input->focused)
@@ -590,11 +590,18 @@ namespace frost
 				SDL_GAMEPAD_AXIS_LEFT_TRIGGER)) / 32767.0f, 0.0f, 1.0f);
 			gamepad.rightTrigger = clamp(float(SDL_GetGamepadAxis(_control->gamepad,
 				SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)) / 32767.0f, 0.0f, 1.0f);
+
 			for (uint32_t ii = 0; ii < GamepadButton::Count; ++ii)
 			{
 				const bool down = SDL_GetGamepadButton(_control->gamepad, s_gamepadButtons[ii]);
-				if (down && !gamepad.buttons[ii]) { gamepad.pressed[ii] = true; }
-				if (!down && gamepad.buttons[ii]) { gamepad.released[ii] = true; }
+				if (down && !gamepad.buttons[ii])
+				{
+					gamepad.pressed[ii] = true;
+				}
+				if (!down && gamepad.buttons[ii])
+				{
+					gamepad.released[ii] = true;
+				}
 				gamepad.buttons[ii] = down;
 			}
 		}
@@ -603,11 +610,10 @@ namespace frost
 		{
 			SDL_CloseGamepad(_control->gamepad);
 			_control->gamepad = NULL;
-			SDL_Window* window = ((SDL_Window*)(_display->window));
 
-			SDL_DestroyWindow(window);
-
+			SDL_DestroyWindow((SDL_Window*)_display->window);
 			_display->window = NULL;
+
 			_display->nativeWindow = NULL;
 			_display->nativeDisplay = NULL;
 			_display->width = 0;
@@ -625,7 +631,6 @@ namespace frost
 	{
 		// Resources
 		_app.insertResource<SdlControlResource>(SdlControlResource{ &_app }); // For exiting application
-
 		_app.insertResource<DisplayResource>();
 		_app.insertResource<InputResource>();
 
@@ -643,6 +648,7 @@ namespace frost
 				return;
 			}
 
+			// Game loop..
 			Ticks previous = getNow();
 			while (!_app.shouldExit())
 			{

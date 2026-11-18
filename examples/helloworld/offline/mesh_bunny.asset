@@ -1,5 +1,5 @@
 guid = 06ad64d2-48ab-4c8a-932d-000000000205
-source = bunny.obj
+source = source/bunny.obj
 packNormal = 1
 tangent = true
 compress = true

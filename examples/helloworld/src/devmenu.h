@@ -25,7 +25,7 @@ namespace
 	///
 	struct DevmenuSystem
 	{
-		static void startup(frost::World& _world, frost::ResMutT<frost::DevmenuResource> _menu,
+		static void startup(frost::World& _world, frost::ResMutT<frost::DevmenuDesc> _menu,
 				frost::ResT<SceneResource> _scene)
 		{
 			_menu->custom = _world.spawn().id();

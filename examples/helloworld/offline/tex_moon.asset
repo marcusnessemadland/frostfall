@@ -1,5 +1,5 @@
 guid = 06ad64d2-48ab-4c8a-932d-000000000005
-source = moon.jpg
+source = source/moon.jpg
 format = BC1
 mips = true
 linear = false

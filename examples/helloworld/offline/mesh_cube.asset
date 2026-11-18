@@ -1,5 +1,5 @@
 guid = a79c1f66-a424-4e05-8bcd-4a2ac19d14fb
-source = cube.obj
+source = source/cube.obj
 packNormal = 1
 tangent = true
 compress = true
