@@ -147,7 +147,7 @@ namespace frost
 		float distance = 150.0f;
 		float splitLambda = 0.7f; //!< Blend uniform and logarithmic splits.
 		float casterDistance = 200.0f; //!< Include casters this far toward the light.
-		float depthBias = 0.0005f; //!< In normalized shadow depth.
+		float depthBias = 0.002f; //!< In normalized shadow depth.
 		float normalBias = 1.0f; //!< In cascade texels, scaled by surface slope.
 		float blend = 0.1f; //!< Fraction of each cascade reserved for transition.
 		float filterRadius = 1.0f; //!< PCF sample spacing in texels; zero gives a hard shadow.
