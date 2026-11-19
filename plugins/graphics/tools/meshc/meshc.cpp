@@ -11,6 +11,7 @@
 #include "../../3rdparty/mikktspace/mikktspace.h"
 
 #include <bx/string.h>
+#include <bx/allocator.h>
 #include <bgfx/bgfx.h>
 #include "vertexlayout.h"
 
@@ -26,7 +27,7 @@ namespace stl = tinystl;
 #include <cgltf/cgltf.h>
 
 #define FROST_MESHC_VERSION_MAJOR 1
-#define FROST_MESHC_VERSION_MINOR 0
+#define FROST_MESHC_VERSION_MINOR 1
 
 #if 0
 #	define BX_TRACE(_format, ...) \
@@ -112,7 +113,8 @@ static uint32_t simplifyMesh(uint16_t* _indices, uint32_t _numIndices, const uin
 		const uint16_t* source = _indices + primitive.m_startIndex;
 		const uint32_t target = bx::max(3u, uint32_t(float(primitive.m_numIndices) * _ratio) / 3 * 3);
 		uint32_t reduced = uint32_t(meshopt_simplify(simplified + count, source,
-			primitive.m_numIndices, (const float*)_vertices, _numVertices, _stride, target, _error));
+			primitive.m_numIndices, (const float*)_vertices, _numVertices, _stride, target, _error,
+			meshopt_SimplifyLockBorder));
 		if (0 == reduced)
 		{
 			// Retain small/disconnected primitives instead of dropping material slots.
@@ -524,6 +526,48 @@ void write(
 	}
 }
 
+
+struct CompiledLod
+{
+	CompiledLod() : block(&allocator), writer(&block) {}
+	bx::DefaultAllocator allocator;
+	bx::MemoryBlock block;
+	bx::MemoryWriter writer;
+	uint64_t numIndices = 0;
+};
+
+static void compileLods(CompiledLod* _lods, uint16_t _numLods, const uint8_t* _vertices,
+	uint32_t _numVertices, const bgfx::VertexLayout& _layout, const uint16_t* _indices,
+	uint32_t _numIndices, bool _compress, uint16_t _materialSlot,
+	const PrimitiveArray& _primitives, bx::Error* _err)
+{
+	const uint16_t stride = _layout.getStride();
+	write(&_lods[0].writer, _vertices, _numVertices, _layout, _indices, _numIndices,
+		_compress, _materialSlot, _primitives, _err);
+	_lods[0].numIndices += _numIndices;
+	for (uint16_t level = 1; level < _numLods && _err->isOk(); ++level)
+	{
+		// Simplify each level from the original to avoid accumulating geometric error.
+		uint8_t* vertices = new uint8_t[_numVertices * stride];
+		uint16_t* indices = new uint16_t[_numIndices];
+		bx::memCopy(vertices, _vertices, _numVertices * stride);
+		bx::memCopy(indices, _indices, _numIndices * sizeof(uint16_t));
+		PrimitiveArray primitives = _primitives;
+		const float ratio = 1.0f / float(1u << level);
+		const uint32_t numIndices = simplifyMesh(indices, _numIndices, vertices, _numVertices,
+			stride, primitives, ratio, 0.01f);
+		for (const Primitive& primitive : primitives)
+		{
+			optimizeVertexCache(indices + primitive.m_startIndex, primitive.m_numIndices, _numVertices);
+		}
+		const uint32_t numVertices = optimizeVertexFetch(indices, numIndices, vertices, _numVertices, stride);
+		write(&_lods[level].writer, vertices, numVertices, _layout, indices, numIndices,
+			_compress, _materialSlot, primitives, _err);
+		_lods[level].numIndices += numIndices;
+		delete [] indices;
+		delete [] vertices;
+	}
+}
 
 inline uint32_t rgbaToAbgr(uint8_t _r, uint8_t _g, uint8_t _b, uint8_t _a)
 {
@@ -1062,8 +1106,7 @@ void parseGltf(char* _data, uint32_t _size, Mesh* _mesh, bool _hasBc, const bx::
 
 static const bx::CommandLineOption s_options[] =
 {
-	{ '\0', "simplify", 1, "<ratio>", "Triangle target ratio, (0, 1]. Default: 1." },
-	{ '\0', "simplify-error", 1, "<error>", "Maximum relative simplification error, [0, 1]. Default: 0.01." },
+	{ '\0', "lod", 0, NULL, "Generate up to three reduced LODs alongside the original mesh." },
 	{ '\0', "config",      1, "<file>", "Frost mesh import description." },
 	{ '\0', "guid",        1, "<guid>",      "Persistent asset GUID (required). Reuse it when rebuilding." },
 	{ 'h',  "help",        0, NULL,          "Display this help and exit."                                 },
@@ -1197,18 +1240,7 @@ int main(int _argc, const char* _argv[])
 		if (!value.isEmpty() && !frost::fromString(&_default, value)) { help("Invalid float import setting."); exit(1); }
 		return _default;
 	};
-	float simplifyRatio = importFloat("simplify", 1.0f);
-	float simplifyError = importFloat("simplifyError", 0.01f);
-	const char* ratioArg = cmdLine.findOption("simplify");
-	const char* errorArg = cmdLine.findOption("simplify-error");
-	if ((NULL != ratioArg && !frost::fromString(&simplifyRatio, frost::StringView(ratioArg)))
-		|| (NULL != errorArg && !frost::fromString(&simplifyError, frost::StringView(errorArg)))
-		|| !frost::isFinite(simplifyRatio) || simplifyRatio <= 0.0f || simplifyRatio > 1.0f
-		|| !frost::isFinite(simplifyError) || simplifyError < 0.0f || simplifyError > 1.0f)
-	{
-		help("Simplification requires ratio in (0, 1] and error in [0, 1].");
-		return bx::kExitFailure;
-	}
+	const bool generateLods = cmdLine.hasArg("lod") || importBool("lod", false);
 
 	int32_t positional = 1;
 
@@ -1556,7 +1588,8 @@ int main(int _argc, const char* _argv[])
 		frost::writeAssetDependency(headerBytes, sizeof(headerBytes), dependency, frost::ErrorAssert{});
 		bx::write(&writer, headerBytes, frost::kAssetDependencySize, &err);
 	}
-	bx::writeLE(&writer, uint32_t(0), &err); // Group count, patched after compilation.
+	const int64_t lodCountOffset = bx::seek(&writer);
+	bx::writeLE(&writer, uint16_t(0), &err); // LOD count, patched after compilation.
 	bx::writeLE(&writer, uint16_t(materialSlots.size()), &err);
 	for (const MaterialSlot& slot : materialSlots)
 	{
@@ -1566,6 +1599,8 @@ int main(int _argc, const char* _argv[])
 		bx::writeLE(&writer, slot.dependency, &err);
 	}
 	uint32_t numGroups = 0;
+	CompiledLod lods[4];
+	const uint16_t numLods = generateLods ? uint16_t(BX_COUNTOF(lods)) : 1;
 
 	Primitive prim;
 	prim.m_startVertex = 0;
@@ -1599,11 +1634,6 @@ int main(int _argc, const char* _argv[])
 				}
 
 
-				if (simplifyRatio < 1.0f && numIndices > 0)
-				{
-					numIndices = int32_t(simplifyMesh(indexData, uint32_t(numIndices), vertexData,
-						uint32_t(numVertices), stride, primitives, simplifyRatio, simplifyError));
-				}
 				triReorderElapsed -= bx::getHPCounter();
 
 				for (PrimitiveArray::const_iterator primIt = primitives.begin(); primIt != primitives.end(); ++primIt)
@@ -1622,7 +1652,7 @@ int main(int _argc, const char* _argv[])
 					uint16_t materialSlot = 0;
 					while (materialSlots[materialSlot].name != material) { ++materialSlot; }
 					++numGroups;
-					write(&writer
+					compileLods(lods, numLods
 						, vertexData
 						, numVertices
 						, layout
@@ -1757,6 +1787,23 @@ int main(int _argc, const char* _argv[])
 
 	BX_ASSERT(0 == primitives.size(), "Not all primitives are written");
 
+	uint16_t writtenLods = 0;
+	uint64_t previousIndices = UINT64_MAX;
+	for (uint16_t level = 0; level < numLods && err.isOk(); ++level)
+	{
+		if (lods[level].numIndices >= previousIndices) { continue; }
+		const int64_t size = bx::seek(&lods[level].writer);
+		if (size > INT32_MAX)
+		{
+			BX_ERROR_SET(&err, bx::kErrorReaderWriterWrite, "Mesh LOD exceeds the asset size limit.");
+			break;
+		}
+		bx::writeLE(&writer, numGroups, &err);
+		bx::write(&writer, lods[level].block.more(), int32_t(size), &err);
+		previousIndices = lods[level].numIndices;
+		bx::printf("LOD %u: %llu triangles\n", writtenLods, (unsigned long long)(previousIndices / 3));
+		++writtenLods;
+	}
 	const int64_t outputSize = bx::seek(&writer);
 	if (0 == numGroups || outputSize > UINT32_MAX)
 	{
@@ -1766,8 +1813,8 @@ int main(int _argc, const char* _argv[])
 	frost::writeAssetHeader(headerBytes, sizeof(headerBytes), header, frost::ErrorAssert{});
 	bx::seek(&writer, 0, bx::Whence::Begin);
 	bx::write(&writer, headerBytes, sizeof(headerBytes), &err);
-	bx::seek(&writer, header.payloadOffset, bx::Whence::Begin);
-	bx::writeLE(&writer, numGroups, &err);
+	bx::seek(&writer, lodCountOffset, bx::Whence::Begin);
+	bx::writeLE(&writer, writtenLods, &err);
 	bx::printf("size: %d\n", uint32_t(outputSize) );
 	bx::close(&writer);
 	if (!err.isOk() )

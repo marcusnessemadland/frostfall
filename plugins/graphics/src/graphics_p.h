@@ -449,13 +449,19 @@ namespace frost
 		MaterialHandle material;
 	};
 
+	struct MeshLod
+	{
+		MeshGroup* groups = NULL;
+		uint32_t numGroups = 0;
+	};
+
 	struct MeshRef
 	{
 		Guid       guid;
-		MeshGroup* groups = NULL;
+		MeshLod* lods = NULL; // Highest detail first; all levels share material slots.
 		MeshMaterialSlot* materials = NULL;
 		uint16_t numMaterials = 0;
-		uint32_t   numGroups = 0;
+		uint16_t numLods = 0;
 		uint32_t   refCount = 0;
 	};
 
@@ -479,25 +485,21 @@ namespace frost
 	static void destroyMesh(MeshRef& _mesh)
 	{
 		AllocatorI* allocator = s_meshContext->allocator;
-		for (uint32_t ii = 0; NULL != _mesh.groups && ii < _mesh.numGroups; ++ii)
+		for (uint16_t lodIndex = 0; NULL != _mesh.lods && lodIndex < _mesh.numLods; ++lodIndex)
 		{
-			MeshGroup& group = _mesh.groups[ii];
-			if (bgfx::isValid(group.vertexBuffer) )
+			MeshLod& lod = _mesh.lods[lodIndex];
+			for (uint32_t ii = 0; NULL != lod.groups && ii < lod.numGroups; ++ii)
 			{
-				bgfx::destroy(group.vertexBuffer);
+				MeshGroup& group = lod.groups[ii];
+				if (bgfx::isValid(group.vertexBuffer)) { bgfx::destroy(group.vertexBuffer); }
+				if (bgfx::isValid(group.indexBuffer)) { bgfx::destroy(group.indexBuffer); }
+				for (uint16_t jj = 0; jj < group.numPrimitives; ++jj)
+				{
+					free(allocator, group.primitives[jj].name);
+				}
+				free(allocator, group.primitives);
 			}
-
-			if (bgfx::isValid(group.indexBuffer) )
-			{
-				bgfx::destroy(group.indexBuffer);
-			}
-
-			for (uint16_t jj = 0; jj < group.numPrimitives; ++jj)
-			{
-				free(allocator, group.primitives[jj].name);
-			}
-
-			free(allocator, group.primitives);
+			free(allocator, lod.groups);
 		}
 
 		for (uint16_t ii = 0; ii < _mesh.numMaterials; ++ii)
@@ -506,7 +508,7 @@ namespace frost
 			release(_mesh.materials[ii].material);
 		}
 		free(allocator, _mesh.materials);
-		free(allocator, _mesh.groups);
+		free(allocator, _mesh.lods);
 		_mesh = MeshRef{};
 	}
 
@@ -952,7 +954,7 @@ namespace frost
 		{
 			return handle;
 		}
-		if (kAssetTypeMesh != header.type || kMeshVersion != header.payloadVersion
+		if (kAssetTypeMesh != header.type || (2 != header.payloadVersion && kMeshVersion != header.payloadVersion)
 			|| header.dependencyCount != _numMaterials || (0 != _numMaterials && NULL == _materials))
 		{
 			FROST_ERROR_SET(_err, kErrorMeshFormat, "Mesh asset type, version, or dependencies are unsupported.");
@@ -964,11 +966,19 @@ namespace frost
 		MeshRef mesh;
 		mesh.guid = header.guid;
 
-		readHE(&reader, mesh.numGroups, true, _err);
-
-		if (!_err->isOk() || 0 == mesh.numGroups || UINT16_MAX < mesh.numGroups || mesh.numGroups > reader.remaining() / 140)
+		uint32_t legacyGroups = 0;
+		if (2 == header.payloadVersion)
 		{
-			FROST_ERROR_SET(_err, kErrorMeshFormat, "Mesh group count is invalid.");
+			mesh.numLods = 1;
+			readHE(&reader, legacyGroups, true, _err);
+		}
+		else
+		{
+			readHE(&reader, mesh.numLods, true, _err);
+		}
+		if (!_err->isOk() || 0 == mesh.numLods || mesh.numLods > reader.remaining() / 140)
+		{
+			FROST_ERROR_SET(_err, kErrorMeshFormat, "Mesh LOD count is invalid.");
 			return handle;
 		}
 
@@ -1026,28 +1036,45 @@ namespace frost
 		}
 		if (!_err->isOk()) { destroyMesh(mesh); return handle; }
 
-		mesh.groups = (MeshGroup*)alloc(s_meshContext->allocator, sizeof(MeshGroup) * mesh.numGroups);
-
-		if (NULL == mesh.groups)
+		mesh.lods = (MeshLod*)alloc(s_meshContext->allocator, sizeof(MeshLod) * mesh.numLods);
+		if (NULL == mesh.lods)
 		{
-			mesh.numGroups = 0;
 			destroyMesh(mesh);
-			FROST_ERROR_SET(_err, kErrorMeshCreate, "Unable to allocate mesh groups.");
+			FROST_ERROR_SET(_err, kErrorMeshCreate, "Unable to allocate mesh LODs.");
 			return handle;
 		}
-
-		for (uint32_t ii = 0; ii < mesh.numGroups; ++ii)
+		for (uint16_t ii = 0; ii < mesh.numLods; ++ii)
 		{
-			FROST_PLACEMENT_NEW(&mesh.groups[ii], MeshGroup)();
+			FROST_PLACEMENT_NEW(&mesh.lods[ii], MeshLod)();
 		}
-
-		for (uint32_t ii = 0; ii < mesh.numGroups && _err->isOk(); ++ii)
+		for (uint16_t lodIndex = 0; lodIndex < mesh.numLods && _err->isOk(); ++lodIndex)
 		{
-			MeshGroup& group = mesh.groups[ii];
-			if (!readMeshGroup(reader, group, _err)) { break; }
-			if (group.materialSlot >= mesh.numMaterials)
+			MeshLod& lod = mesh.lods[lodIndex];
+			if (2 == header.payloadVersion) { lod.numGroups = legacyGroups; }
+			else { readHE(&reader, lod.numGroups, true, _err); }
+			if (!_err->isOk() || 0 == lod.numGroups || UINT16_MAX < lod.numGroups || lod.numGroups > reader.remaining() / 140)
 			{
-				FROST_ERROR_SET(_err, kErrorMeshFormat, "Mesh group material slot is invalid.");
+				FROST_ERROR_SET(_err, kErrorMeshFormat, "Mesh LOD group count is invalid.");
+				break;
+			}
+			lod.groups = (MeshGroup*)alloc(s_meshContext->allocator, sizeof(MeshGroup) * lod.numGroups);
+			if (NULL == lod.groups)
+			{
+				FROST_ERROR_SET(_err, kErrorMeshCreate, "Unable to allocate mesh groups.");
+				break;
+			}
+			for (uint32_t ii = 0; ii < lod.numGroups; ++ii)
+			{
+				FROST_PLACEMENT_NEW(&lod.groups[ii], MeshGroup)();
+			}
+			for (uint32_t ii = 0; ii < lod.numGroups && _err->isOk(); ++ii)
+			{
+				MeshGroup& group = lod.groups[ii];
+				if (!readMeshGroup(reader, group, _err)) { break; }
+				if (group.materialSlot >= mesh.numMaterials)
+				{
+					FROST_ERROR_SET(_err, kErrorMeshFormat, "Mesh group material slot is invalid.");
+				}
 			}
 		}
 

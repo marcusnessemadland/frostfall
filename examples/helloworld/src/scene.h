@@ -33,6 +33,7 @@ namespace
 			Floor,
 			Dragon,
 			Sky,
+			Sun,
 			Moon,
 
 			Count
@@ -90,14 +91,16 @@ namespace
 			_scene->instances[SceneResource::Dragon] = _world.spawn(
 				frost::MeshComponent{ _scene->dragon, &_scene->materials[1], 1 }, transform).id();
 
-			// Spawn sky TODO: This is a mess, figure out how to deal with moon and sun in the same sky system...
+			// Sky appearance and celestial state are independent of the scene lights.
 			frost::SkyComponent sky;
 			sky.time = 10.0f;
 			sky.moonTexture = _scene->moonTexture;
 			sky.moonAlbedo = 0.37746f;
-			_scene->instances[SceneResource::Sky] = _world.spawn(sky, frost::DirectionalLightComponent{}).id();
+			_scene->instances[SceneResource::Sky] = _world.spawn(sky).id();
+			_scene->instances[SceneResource::Sun] = _world.spawn(frost::DirectionalLightComponent{}).id();
 			_scene->instances[SceneResource::Moon] = _world.spawn(frost::DirectionalLightComponent{}).id();
-			_world.getResourceMut<frost::SunShadowResource>()->light = _scene->instances[SceneResource::Sky];
+			_world.getResourceMut<frost::SunShadowResource>()->light = _scene->instances[SceneResource::Sun];
+			_world.getResourceMut<frost::GraphicsDesc>()->debugLight = _scene->instances[SceneResource::Moon];
 
 			// Spawn player TODO: This is also overly complex, lets reset on spawn? and spawn cameracomponent in the camerasystem?
 			transform = {};
@@ -117,8 +120,7 @@ namespace
 
 		static void update(frost::World& _world, frost::ResT<SceneResource> _scene,
 			frost::ResT<frost::TimeResource> _time,
-			frost::ResMutT<frost::SunShadowResource> _shadows,
-			frost::QueryT<const frost::SkyComponent&, frost::DirectionalLightComponent&> _suns)
+			frost::ResMutT<frost::SunShadowResource> _shadows)
 		{
 			// Animate the dragon around its base with a uniform scale.
 			frost::TransformComponent* transform = _world.getMut<frost::TransformComponent>(_scene->instances[SceneResource::Dragon]);
@@ -127,29 +129,29 @@ namespace
 			transform->scale = { scale, scale, scale };
 			transform->rotation = frost::rotateY(frost::kPi + time * 0.35f);
 
-			// Update directional light direction and color based on sun and moon.
-			_suns.each([&](const frost::SkyComponent& _sky, frost::DirectionalLightComponent& _light)
+			// Example glue runs after sky preparation and before shadow/light rendering.
+			const frost::SkyComponent* sky = _world.get<frost::SkyComponent>(_scene->instances[SceneResource::Sky]);
+			frost::DirectionalLightComponent* sun = _world.getMut<frost::DirectionalLightComponent>(_scene->instances[SceneResource::Sun]);
+			frost::DirectionalLightComponent* moon = _world.getMut<frost::DirectionalLightComponent>(_scene->instances[SceneResource::Moon]);
+			if (NULL == sky || NULL == sun || NULL == moon) { return; }
+
+			sun->direction = sky->sunDirection;
+			sun->color = sky->sunColor;
+			moon->direction = sky->moonLightDirection;
+			moon->color = sky->moonColor;
+
+			const frost::Vec3 weights = { 0.2126f, 0.7152f, 0.0722f };
+			const float sunlight = frost::dot(sun->color, weights) * sun->intensity;
+			const float moonlight = frost::dot(moon->color, weights) * moon->intensity;
+			// Reuse one atlas. Hysteresis avoids flipping ownership near equal brightness.
+			if (_shadows->light == _scene->instances[SceneResource::Sun] && moonlight > sunlight * 1.25f)
 			{
-				// TODO: Overly complex
-				_light.direction = _sky.sunDirection;
-				_light.color = _sky.sunColor;
-				frost::DirectionalLightComponent* moon = _world.getMut<frost::DirectionalLightComponent>(
-					_scene->instances[SceneResource::Moon]);
-				moon->direction = _sky.moonLightDirection;
-				moon->color = _sky.moonColor;
-				const frost::Vec3 weights = { 0.2126f, 0.7152f, 0.0722f };
-				const float sunlight = frost::dot(_light.color, weights) * _light.intensity;
-				const float moonlight = frost::dot(moon->color, weights) * moon->intensity;
-				// Reuse one atlas. Hysteresis avoids flipping ownership near equal brightness.
-				if (_shadows->light == _scene->instances[SceneResource::Sky] && moonlight > sunlight * 1.25f)
-				{
-					_shadows->light = _scene->instances[SceneResource::Moon];
-				}
-				else if (_shadows->light == _scene->instances[SceneResource::Moon] && sunlight > moonlight * 1.25f)
-				{
-					_shadows->light = _scene->instances[SceneResource::Sky];
-				}
-			});
+				_shadows->light = _scene->instances[SceneResource::Moon];
+			}
+			else if (_shadows->light == _scene->instances[SceneResource::Moon] && sunlight > moonlight * 1.25f)
+			{
+				_shadows->light = _scene->instances[SceneResource::Sun];
+			}
 		}
 
 		static void shutdown(frost::World& _world, frost::ResMutT<SceneResource> _scene)

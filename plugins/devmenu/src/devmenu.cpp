@@ -163,10 +163,13 @@ namespace frost
 				devmenuComponent<&SkyComponent::latitude>({}));
 			devmenuValue(_world, sky, "Turbidity", DevmenuFloatComponent{ 0, 1.9, 10, 0.1, 2 }, 4,
 				devmenuComponent<&SkyComponent::turbidity>({}));
-			devmenuValue(_world, sky, "Sun intensity", DevmenuFloatComponent{ 0, 0, 100, 0.1, 2 }, 5,
+
+			const Entity sun = devmenuFolder(_world, sky, "Sun", 5);
+			_world.insert(sun, DevmenuTargetComponent{ DevmenuTargetComponent::Sky });
+			devmenuValue(_world, sun, "Intensity", DevmenuFloatComponent{ 0, 0, 100, 0.1, 2 }, 0,
 				devmenuComponent<&SkyComponent::sunIntensity>({}));
 
-			const Entity moon = devmenuFolder(_world, _menu->graphics, "Moon", 7);
+			const Entity moon = devmenuFolder(_world, sky, "Moon", 6);
 			_world.insert(moon, DevmenuTargetComponent{ DevmenuTargetComponent::Sky });
 			devmenuValue(_world, moon, "Cycle (0 new, 0.5 full)", DevmenuFloatComponent{ 0, 0, 1, 0.025, 3 }, 0,
 				devmenuComponent<&SkyComponent::moonCycle>({}));
@@ -258,7 +261,7 @@ namespace frost
 			devmenuValue(_world, shadows, "Filter radius", DevmenuFloatComponent{ 0, 0, 3, 0.25, 2 }, 7,
 				devmenuResource<&SunShadowResource::filterRadius>());
 
-			devmenuValue(_world, shadows, "Shadow LODs", DevmenuBoolComponent{}, 8,
+			devmenuValue(_world, shadows, "LODs", DevmenuBoolComponent{}, 8,
 				devmenuResource<&SunShadowResource::lods>());
 			devmenuValue(_world, shadows, "Instancing", DevmenuBoolComponent{}, 9,
 				devmenuResource<&SunShadowResource::instancing>());

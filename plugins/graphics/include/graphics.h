@@ -29,7 +29,7 @@ namespace frost
 	constexpr uint32_t kAssetTypeTexture = FROST_MAKEFOURCC('T', 'E', 'X', 'R');
 	constexpr uint32_t kAssetTypeMaterial = FROST_MAKEFOURCC('M', 'A', 'T', 'L');
 
-	constexpr uint32_t kMeshVersion   = 2;
+	constexpr uint32_t kMeshVersion   = 3;
 	constexpr uint32_t kTextureVersion = 1;
 	constexpr uint32_t kMaterialVersion = 1;
 
@@ -180,7 +180,6 @@ namespace frost
 		const MaterialHandle* materials = NULL;
 		uint16_t numMaterials = 0;
 		bool castShadows = true;
-		MeshHandle shadowLods[3];
 	};
 
 	///
@@ -420,6 +419,7 @@ namespace frost
 		float debugDepth = 100.0f;
 		bool preventBanding = true;
 		bool gpuProfiling = true;
+		Entity debugLight; //!< Explicit light entity shown by GraphicsDebugView::MoonLight.
 	};
 
 	/// Runtime graphics configuration read every frame.

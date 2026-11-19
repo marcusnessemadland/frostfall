@@ -338,9 +338,10 @@ namespace frost
 				float mtx[16];
 				if (!getMeshTransform(mtx, _transform)) { return; }
 
-				for (uint32_t ii = 0; ii < mesh->numGroups; ++ii)
+				const MeshLod& lod = mesh->lods[0];
+				for (uint32_t ii = 0; ii < lod.numGroups; ++ii)
 				{
-					const MeshGroup& group = mesh->groups[ii];
+					const MeshGroup& group = lod.groups[ii];
 					const MaterialCreate& desc = getMeshMaterial(_mesh, *mesh, group.materialSlot);
 					const uint64_t state = meshState(desc, _transform) | BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A
 						| BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS;
@@ -650,48 +651,54 @@ namespace frost
 				if (!getMeshTransform(model, _transform)) { return; }
 				float modelLight[16];
 				mtxMul(modelLight, model, lightView);
-				MeshHandle handle = _mesh.handle;
-				for (uint8_t cascade = 0; cascade < 4; ++cascade)
+				const MeshRef* mesh = getMeshRef(_mesh.handle);
+				FROST_ASSERT(NULL != mesh, "Shadow casters must reference live meshes.");
+				const MeshLod& lod = mesh->lods[_settings->lods ? mesh->numLods - 1 : 0];
+				float modelProjection[4][16];
+				bool projectionReady[4] = {};
+				for (uint32_t ii = 0; ii < lod.numGroups; ++ii)
 				{
-					if (_settings->lods && cascade > 0 && isValid(_mesh.shadowLods[cascade - 1]))
+					const MeshGroup& group = lod.groups[ii];
+					Aabb bounds;
+					bounds.min = { kFloatLargest, kFloatLargest, kFloatLargest };
+					bounds.max = { -kFloatLargest, -kFloatLargest, -kFloatLargest };
+					for (uint8_t jj = 0; jj < 8; ++jj)
 					{
-						handle = _mesh.shadowLods[cascade - 1];
+						const Aabb& local = group.bounds.aabb;
+						const Vec3 corner = mul({ jj & 1 ? local.max.x : local.min.x,
+							jj & 2 ? local.max.y : local.min.y,
+							jj & 4 ? local.max.z : local.min.z }, modelLight);
+						bounds.min = min(bounds.min, corner);
+						bounds.max = max(bounds.max, corner);
 					}
-					const MeshRef* mesh = getMeshRef(handle);
-					FROST_ASSERT(NULL != mesh, "Shadow casters must reference live meshes and LODs.");
-					for (uint32_t ii = 0; ii < mesh->numGroups; ++ii)
+					const MaterialCreate& material = getMeshMaterial(_mesh, *mesh, group.materialSlot);
+					const uint64_t state = meshState(material, _transform)
+						| BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS;
+					uint64_t triangles = 0;
+					for (uint16_t jj = 0; jj < group.numPrimitives; ++jj)
 					{
-						const MeshGroup& group = mesh->groups[ii];
-						Aabb bounds;
-						bounds.min = { kFloatLargest, kFloatLargest, kFloatLargest };
-						bounds.max = { -kFloatLargest, -kFloatLargest, -kFloatLargest };
-						for (uint8_t jj = 0; jj < 8; ++jj)
-						{
-							const Aabb& local = group.bounds.aabb;
-							const Vec3 corner = mul({ jj & 1 ? local.max.x : local.min.x,
-								jj & 2 ? local.max.y : local.min.y,
-								jj & 4 ? local.max.z : local.min.z }, modelLight);
-							bounds.min = min(bounds.min, corner);
-							bounds.max = max(bounds.max, corner);
-						}
+						triangles += group.primitives[jj].numIndices / 3;
+					}
+					for (uint8_t cascade = 0; cascade < 4; ++cascade)
+					{
 						if (!overlap(bounds, cascadeBounds[cascade])) { continue; }
 						if (_draws->count == _draws->draws.getCapacity())
 						{
 							_draws->draws.setCapacity(max(128u, _draws->count * 2), _draws->count);
 						}
-						const MaterialCreate& material = getMeshMaterial(_mesh, *mesh, group.materialSlot);
 						ShadowDraw& draw = *_draws->draws.getPtr(_draws->count++);
 						draw.group = &group;
 						draw.material = material.flags & MaterialFlags::Masked ? &material : NULL;
-						draw.state = meshState(material, _transform)
-							| BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS;
+						draw.state = state;
 						draw.cascade = cascade;
-						mtxMul(draw.modelProjection, model, _shadows->matrices[cascade]);
-						_stats->shadowCasters[cascade] += group.numPrimitives;
-						for (uint16_t jj = 0; jj < group.numPrimitives; ++jj)
+						if (!projectionReady[cascade])
 						{
-							_stats->shadowTriangles += group.primitives[jj].numIndices / 3;
+							mtxMul(modelProjection[cascade], model, _shadows->matrices[cascade]);
+							projectionReady[cascade] = true;
 						}
+						memCopy(draw.modelProjection, modelProjection[cascade], sizeof(draw.modelProjection));
+						_stats->shadowCasters[cascade] += group.numPrimitives;
+						_stats->shadowTriangles += triangles;
 					}
 				}
 			});
@@ -829,7 +836,7 @@ namespace frost
 		static void update(ResT<RenderFrame> _frame, ResT<GBufferResource> _gbuffer,
 			QueryT<Entity, const DirectionalLightComponent&> _lights, ResMutT<LightResource> _light,
 			ResT<SunShadowTargets> _shadows, ResT<SunShadowResource> _shadowSettings,
-			ResT<GraphicsDesc> _graphics, QueryT<const SkyComponent&> _skies)
+			ResT<GraphicsDesc> _graphics)
 		{
 			if (!_frame->active)
 			{
@@ -858,13 +865,11 @@ namespace frost
 			bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
 			bgfx::submit(kRenderPassLight, _light->program);
 
-			SkyComponent sky;
-			_skies.single([&](const SkyComponent& _component) { sky = _component; });
 			_lights.each([&](Entity _entity, const DirectionalLightComponent& _component)
 			{
 				if (0.0f == _component.intensity || (lunarDebug
 					&& (_graphics->debugView != GraphicsDebugView::MoonLight
-						|| dot(normalize(_component.direction), sky.moonLightDirection) < 0.99999f)))
+						|| _entity != _graphics->debugLight)))
 				{
 					return;
 				}
