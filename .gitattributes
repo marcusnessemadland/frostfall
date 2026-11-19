@@ -11,3 +11,4 @@
 makefile eol=lf
 examples/helloworld/offline/** filter=lfs diff=lfs merge=lfs -text
 examples/helloworld/runtime/** filter=lfs diff=lfs merge=lfs -text
+examples/helloworld/offline/source/** filter=lfs diff=lfs merge=lfs -text
