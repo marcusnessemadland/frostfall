@@ -97,8 +97,6 @@ namespace frost
 #include "fs_deferred_combine.bin.h"
 #include "vs_ui.bin.h"
 #include "fs_ui.bin.h"
-#include "fs_environment.bin.h"
-#include "fs_environment_capture.bin.h"
 #include "vs_shadow.bin.h"
 #include "vs_shadow_instanced.bin.h"
 #include "fs_shadow.bin.h"
@@ -110,13 +108,7 @@ namespace frost
 
 namespace frost
 {
-	// TODO: Unsure about these three constexprs
-	constexpr uint16_t kEnvironmentSize = 128;
-	constexpr uint8_t kEnvironmentMips = 8;
-	constexpr uint16_t kEnvironmentViews = 6 + 6 * kEnvironmentMips + 6 + 1;
-
-	constexpr bgfx::ViewId kRenderPassEnvironment = 0;
-	constexpr bgfx::ViewId kRenderPassGeometry = kRenderPassEnvironment + kEnvironmentViews;
+	constexpr bgfx::ViewId kRenderPassGeometry = 0;
 	constexpr bgfx::ViewId kRenderPassShadow = kRenderPassGeometry + 1;
 	constexpr bgfx::ViewId kRenderPassLight = kRenderPassShadow + 1;
 	constexpr bgfx::ViewId kRenderPassSky = kRenderPassLight + 1;
@@ -134,8 +126,6 @@ namespace frost
 		BGFX_EMBEDDED_SHADER(fs_sky),
 		BGFX_EMBEDDED_SHADER(vs_deferred_combine),
 		BGFX_EMBEDDED_SHADER(fs_deferred_combine),
-		BGFX_EMBEDDED_SHADER(fs_environment),
-		BGFX_EMBEDDED_SHADER(fs_environment_capture),
 		BGFX_EMBEDDED_SHADER(vs_shadow),
 		BGFX_EMBEDDED_SHADER(vs_shadow_instanced),
 		BGFX_EMBEDDED_SHADER(fs_shadow),
@@ -382,42 +372,9 @@ namespace frost
 
 } // namespace frost
 
-// Environment and sun shadow resources
+// Sun shadow resources
 namespace frost
 {
-	struct EnvironmentLightingResource
-	{
-		bgfx::ProgramHandle captureProgram = BGFX_INVALID_HANDLE;
-		bgfx::TextureHandle source = BGFX_INVALID_HANDLE;
-		bgfx::UniformHandle s_source = BGFX_INVALID_HANDLE;
-		float capturePosition[4] = {};
-		bgfx::ProgramHandle program = BGFX_INVALID_HANDLE;
-		bgfx::TextureHandle specular = BGFX_INVALID_HANDLE;
-		bgfx::TextureHandle diffuse = BGFX_INVALID_HANDLE;
-		bgfx::TextureHandle brdf = BGFX_INVALID_HANDLE;
-		bgfx::FrameBufferHandle targets[kEnvironmentViews];
-		bgfx::UniformHandle samplers[3];
-		bgfx::UniformHandle u_environment = BGFX_INVALID_HANDLE;
-		bgfx::UniformHandle u_environmentBake = BGFX_INVALID_HANDLE;
-		bgfx::VertexLayout layout;
-		float skyState[23] = {};
-		double elapsed = 0.0;
-		bool initialized = false;
-		bool active = false;
-	};
-
-	static void bindEnvironment(const EnvironmentLightingResource& _environment,
-		const EnvironmentResource& _settings)
-	{
-		bgfx::setTexture(5, _environment.samplers[0], _environment.specular);
-		bgfx::setTexture(6, _environment.samplers[1], _environment.diffuse);
-		bgfx::setTexture(7, _environment.samplers[2], _environment.brdf);
-		const float parameters[] = { _environment.active
-			? max(0.0f, _settings.intensity) : 0.0f,
-			float(kEnvironmentMips - 1), 0.0f, 0.0f };
-		bgfx::setUniform(_environment.u_environment, parameters);
-	}
-
 	struct ShadowDraw
 	{
 		const MeshGroup* group;
@@ -476,7 +433,7 @@ namespace frost
 	static void bindShadows(const SunShadowTargets& _shadows, const SunShadowResource& _settings,
 		const RenderFrame& _frame, bool _enabled)
 	{
-		bgfx::setTexture(8, _shadows.sampler, _shadows.atlas);
+		bgfx::setTexture(5, _shadows.sampler, _shadows.atlas);
 		const float parameters[] = { max(0.0f, _settings.depthBias), max(0.0f, _settings.normalBias),
 			clamp(_settings.blend, 0.0f, 0.3f), max(0.0f, _settings.filterRadius) };
 		const float info[] = { 1.0f / float(_shadows.resolution), _shadows.splits[3],
@@ -871,7 +828,6 @@ namespace frost
 
 		static void update(ResT<RenderFrame> _frame, ResT<GBufferResource> _gbuffer,
 			QueryT<Entity, const DirectionalLightComponent&> _lights, ResMutT<LightResource> _light,
-			ResT<EnvironmentLightingResource> _environment, ResT<EnvironmentResource> _environmentSettings,
 			ResT<SunShadowTargets> _shadows, ResT<SunShadowResource> _shadowSettings,
 			ResT<GraphicsDesc> _graphics, QueryT<const SkyComponent&> _skies)
 		{
@@ -891,8 +847,7 @@ namespace frost
 			bgfx::setViewTransform(kRenderPassLight, NULL, _frame->screenProjection);
 			bgfx::touch(kRenderPassLight);
 
-			// Seed emission and environment once, including frames without a directional light.
-			bindEnvironment(*_environment, *_environmentSettings);
+			// Seed emission once, including frames without a directional light.
 			bindShadows(*_shadows, *_shadowSettings, *_frame, false);
 			const bool lunarDebug = _graphics->debugView >= GraphicsDebugView::LunarSky;
 			const float emission[4] = { 0.0f, 0.0f, 0.0f, lunarDebug ? -1.0f : 0.0f };
@@ -934,7 +889,6 @@ namespace frost
 				bgfx::setUniform(_light->u_sunDirection, direction);
 				bgfx::setUniform(_light->u_sunLuminance, luminance);
 				bindScene(*_frame, *_gbuffer, *_light);
-				bindEnvironment(*_environment, *_environmentSettings);
 				bindShadows(*_shadows, *_shadowSettings, *_frame, _entity == _shadowSettings->light);
 				bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_BLEND_ADD);
 				bgfx::submit(kRenderPassLight, _light->program);
@@ -1160,17 +1114,17 @@ namespace frost
 	};
 
 	static void bindSky(const SkyResource& _sky, const SkyComponent& _component,
-		GraphicsDebugView::Enum _debug, bool _active = true)
+		GraphicsDebugView::Enum _debug)
 	{
 		float direction[4] = {};
 		store(direction, _component.sunDirection);
 		float luminance[4] = {};
-		store(luminance, mul(solarSkyLuminance(_component), _active ? 1.0f : 0.0f));
+		store(luminance, solarSkyLuminance(_component));
 		const float sunTint[] = { max(0.0f, _component.sunTint.x) * max(0.0f, _component.sunIntensity),
 			max(0.0f, _component.sunTint.y) * max(0.0f, _component.sunIntensity),
 			max(0.0f, _component.sunTint.z) * max(0.0f, _component.sunIntensity), 0.0f };
 		const float parameters[] = { max(0.0001f, _component.sunSize), max(0.0001f, _component.sunBloom),
-			float(_debug), _active ? 1.0f : 0.0f };
+			float(_debug), 0.0f };
 		float perez[20] = {};
 		for (uint8_t ii = 0; ii < 5; ++ii)
 		{
@@ -1185,10 +1139,10 @@ namespace frost
 		const Vec3 transmission = moonTransmittance(_component.moonElevation, _component.turbidity);
 		const Vec3 tint = { max(0.0f, _component.moonTint.x), max(0.0f, _component.moonTint.y), max(0.0f, _component.moonTint.z) };
 		// The disk stays neutral while the authored moonlight profile supplies the cool scene lighting.
-		store(moonColor, mul(mul(transmission, tint), _active
-			? sampleSkyLuminance(s_moonLuminance, hour).y * max(0.0f, _component.moonIntensity) : 0.0f));
+		store(moonColor, mul(mul(transmission, tint),
+			sampleSkyLuminance(s_moonLuminance, hour).y * max(0.0f, _component.moonIntensity)));
 		float moonSkyLuminance[4] = {};
-		store(moonSkyLuminance, mul(lunarSkyLuminance(_component), _active ? 1.0f : 0.0f));
+		store(moonSkyLuminance, lunarSkyLuminance(_component));
 		const TextureRef* texture = getTextureRef(_component.moonTexture);
 		const float radius = sin(toRad(clamp(_component.moonSize, 0.01f, 10.0f)) * 0.5f);
 		const float moonParameters[] = { radius, _component.moonPhaseBrightness * 2.0f,
@@ -1373,156 +1327,6 @@ namespace frost
 
 } // namespace frost
 
-// Procedural sky environment
-namespace frost
-{
-	struct EnvironmentLightingSystem
-	{
-		static void startup(ResMutT<EnvironmentLightingResource> _environment)
-		{
-			const uint64_t flags = BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP | BGFX_SAMPLER_W_CLAMP;
-			FROST_ASSERT(bgfx::isTextureValid(0, true, 1, bgfx::TextureFormat::RGBA16F, flags),
-				"HDR environment cubemaps are unsupported.");
-			_environment->source = bgfx::createTextureCube(kEnvironmentSize, false, 1, bgfx::TextureFormat::RGBA16F, flags);
-			_environment->specular = bgfx::createTextureCube(kEnvironmentSize, true, 1, bgfx::TextureFormat::RGBA16F, flags);
-			_environment->diffuse = bgfx::createTextureCube(16, false, 1, bgfx::TextureFormat::RGBA16F, flags);
-			_environment->brdf = bgfx::createTexture2D(128, 128, false, 1, bgfx::TextureFormat::RGBA16F, flags);
-			bgfx::setName(_environment->source, "Sky environment capture");
-			bgfx::setName(_environment->specular, "Environment GGX specular");
-			bgfx::setName(_environment->diffuse, "Environment diffuse");
-			bgfx::setName(_environment->brdf, "Environment BRDF lookup");
-			const bgfx::RendererType::Enum type = bgfx::getRendererType();
-			_environment->captureProgram = bgfx::createProgram(
-				bgfx::createEmbeddedShader(s_embeddedShaders, type, "vs_sky"),
-				bgfx::createEmbeddedShader(s_embeddedShaders, type, "fs_environment_capture"), true);
-			FROST_ASSERT(bgfx::isValid(_environment->captureProgram), "Failed to create environment capture program.");
-			_environment->s_source = bgfx::createUniform("s_environmentSource", bgfx::UniformType::Sampler);
-			_environment->program = bgfx::createProgram(
-				bgfx::createEmbeddedShader(s_embeddedShaders, type, "vs_deferred_light"),
-				bgfx::createEmbeddedShader(s_embeddedShaders, type, "fs_environment"), true);
-			FROST_ASSERT(bgfx::isValid(_environment->program), "Failed to create environment filtering program.");
-			const char* samplers[] = { "s_environmentSpecular", "s_environmentDiffuse", "s_environmentBrdf" };
-			for (uint8_t ii = 0; ii < 3; ++ii)
-			{
-				_environment->samplers[ii] = bgfx::createUniform(samplers[ii], bgfx::UniformType::Sampler);
-			}
-			_environment->u_environment = bgfx::createUniform("u_environment", bgfx::UniformType::Vec4);
-			_environment->u_environmentBake = bgfx::createUniform("u_environmentBake", bgfx::UniformType::Vec4);
-			_environment->layout.begin().add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
-				.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float).end();
-			for (uint16_t ii = 0; ii < kEnvironmentViews; ++ii)
-			{
-				const bool capture = ii < 6;
-				const bool specular = ii >= 6 && ii < 6 + 6 * kEnvironmentMips;
-				const bool brdf = ii == kEnvironmentViews - 1;
-				const bgfx::TextureHandle texture = capture ? _environment->source
-					: (brdf ? _environment->brdf : (specular ? _environment->specular : _environment->diffuse));
-				bgfx::Attachment attachment;
-				attachment.init(texture, bgfx::Access::Write, brdf ? 0 : ii % 6, 1,
-					specular ? uint16_t((ii - 6) / 6) : 0, 0);
-				_environment->targets[ii] = bgfx::createFrameBuffer(1, &attachment, false);
-				FROST_ASSERT(bgfx::isValid(_environment->targets[ii]), "Failed to create an environment target.");
-				bgfx::setViewName(kRenderPassEnvironment + ii, capture ? "Sky cubemap capture"
-					: (brdf ? "Environment BRDF" : (specular ? "Environment specular" : "Environment diffuse")));
-			}
-
-		}
-
-		static void update(ResT<RenderFrame> _frame, ResT<TimeResource> _time,
-			ResT<EnvironmentResource> _settings, QueryT<const SkyComponent&> _skies,
-			ResT<SkyResource> _sky, ResMutT<EnvironmentLightingResource> _environment)
-		{
-			if (!_frame->active) { return; }
-			_environment->elapsed += max(0.0, _time->delta);
-			SkyComponent sky;
-			bool active = false;
-			_skies.single([&](const SkyComponent& _component) { sky = _component; active = true; });
-			const float hour = isFinite(sky.time) ? wrap(sky.time, 24.0f) : 12.0f;
-			const float state[] = { active ? 1.0f : 0.0f, hour, sky.turbidity,
-				sky.sunDirection.x, sky.sunDirection.y, sky.sunDirection.z,
-				_frame->cameraPosition[0], _frame->cameraPosition[1], _frame->cameraPosition[2],
-				sky.moonDirection.x, sky.moonDirection.y, sky.moonDirection.z,
-				sky.moonColor.x, sky.moonColor.y, sky.moonColor.z,
-				sky.sunColor.x, sky.sunColor.y, sky.sunColor.z, sky.moonIlluminance,
-				sky.moonIntensity, sky.moonTint.x, sky.moonTint.y, sky.moonTint.z };
-			const bool changed = 0 != memCmp(state, _environment->skyState, sizeof(state));
-			if (_environment->initialized && (!changed || (_environment->active == active
-				&& _environment->elapsed < max(0.0f, _settings->updateInterval)))) { return; }
-
-			const Vec3 eye = { _frame->cameraPosition[0], _frame->cameraPosition[1], _frame->cameraPosition[2] };
-			const Vec3 directions[] = {
-				{ 1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f },
-				{ 0.0f, 1.0f, 0.0f }, { 0.0f, -1.0f, 0.0f },
-				{ 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, -1.0f },
-			};
-			const Vec3 ups[] = {
-				{ 0.0f, 1.0f, 0.0f }, { 0.0f, 1.0f, 0.0f },
-				{ 0.0f, 0.0f, -1.0f }, { 0.0f, 0.0f, 1.0f },
-				{ 0.0f, 1.0f, 0.0f }, { 0.0f, 1.0f, 0.0f },
-			};
-			float captureProjection[16];
-			mtxProj(captureProjection, 90.0f, 1.0f, 0.1f, 1000.0f, bgfx::getCaps()->homogeneousDepth);
-			if (bgfx::getCaps()->originBottomLeft) { captureProjection[5] = -captureProjection[5]; }
-			for (uint16_t ii = 0; ii < kEnvironmentViews; ++ii)
-			{
-				const bool capture = ii < 6;
-				const bool specular = ii >= 6 && ii < 6 + 6 * kEnvironmentMips;
-				const bool brdf = ii == kEnvironmentViews - 1;
-				if (brdf && _environment->initialized) { continue; }
-				const uint8_t mip = specular ? uint8_t((ii - 6) / 6) : 0;
-				const uint16_t size = brdf ? 128 : (capture ? kEnvironmentSize
-					: (specular ? kEnvironmentSize >> mip : 16));
-				const bgfx::ViewId view = kRenderPassEnvironment + ii;
-				bgfx::setViewRect(view, 0, 0, size, size);
-				bgfx::setViewFrameBuffer(view, _environment->targets[ii]);
-				bgfx::setViewClear(view, BGFX_CLEAR_NONE);
-				if (capture)
-				{
-					bindSky(*_sky, sky, GraphicsDebugView::None, active);
-					float captureView[16];
-					mtxLookAt(captureView, eye, add(eye, directions[ii]), ups[ii]);
-					bgfx::setViewTransform(view, captureView, captureProjection);
-					bgfx::setVertexBuffer(0, _sky->vertices);
-					bgfx::setIndexBuffer(_sky->indices);
-				}
-				else
-				{
-					bgfx::setViewTransform(view, NULL, _frame->screenProjection);
-					const float bake[] = { float(ii % 6), float(mip) / float(kEnvironmentMips - 1),
-						brdf ? 2.0f : (specular ? 0.0f : 1.0f), 0.0f };
-					bgfx::setUniform(_environment->u_environmentBake, bake);
-					bgfx::setTexture(0, _environment->s_source, _environment->source);
-					screenSpaceTriangle(_environment->layout);
-				}
-				bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
-				bgfx::submit(view, capture ? _environment->captureProgram : _environment->program);
-			}
-			memCopy(_environment->capturePosition, _frame->cameraPosition, sizeof(_environment->capturePosition));
-
-			memCopy(_environment->skyState, state, sizeof(state));
-			_environment->elapsed = 0.0;
-			_environment->initialized = true;
-			_environment->active = active;
-		}
-
-		static void shutdown(ResMutT<EnvironmentLightingResource> _environment)
-		{
-			for (bgfx::FrameBufferHandle target : _environment->targets) { bgfx::destroy(target); }
-			bgfx::destroy(_environment->source);
-			bgfx::destroy(_environment->captureProgram);
-			bgfx::destroy(_environment->s_source);
-			bgfx::destroy(_environment->specular);
-			bgfx::destroy(_environment->diffuse);
-			bgfx::destroy(_environment->brdf);
-			bgfx::destroy(_environment->program);
-			for (bgfx::UniformHandle sampler : _environment->samplers) { bgfx::destroy(sampler); }
-			bgfx::destroy(_environment->u_environment);
-			bgfx::destroy(_environment->u_environmentBake);
-		}
-	};
-
-} // namespace frost
-
 // Combine (tone mapping and debug views)
 namespace frost
 {
@@ -1543,7 +1347,6 @@ namespace frost
 	static void submitOutput(bgfx::ViewId _view, uint32_t _mode, const RenderFrame& _frame,
 		const GraphicsDesc& _graphics, const GBufferResource& _gbuffer,
 		const LightResource& _light, const ToneMapResource& _output,
-		const EnvironmentLightingResource& _environment, const EnvironmentResource& _environmentSettings,
 		const SunShadowTargets& _shadows, const SunShadowResource& _shadowSettings)
 	{
 		const float parameters[4] = { _frame.exposure, _graphics.preventBanding ? 1.0f : 0.0f,
@@ -1556,10 +1359,7 @@ namespace frost
 		bgfx::setTexture(2, _output.s_normal, _gbuffer.textures[1]);
 		bgfx::setTexture(3, _output.s_depth, _gbuffer.textures[2]);
 		bgfx::setTexture(4, _output.s_material, _gbuffer.textures[3]);
-		bgfx::setTexture(12, _output.s_emissive, _gbuffer.textures[4]);
-		bgfx::setUniform(_light.u_sceneCamera, _frame.cameraPosition);
-		bgfx::setUniform(_light.u_sceneDirection, _frame.cameraDirection);
-		bindEnvironment(_environment, _environmentSettings);
+		bgfx::setTexture(6, _output.s_emissive, _gbuffer.textures[4]);
 		bindShadows(_shadows, _shadowSettings, _frame, true);
 		screenSpaceTriangle(_output.layout);
 		bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
@@ -1590,7 +1390,6 @@ namespace frost
 
 		static void update(ResT<RenderFrame> _frame, ResT<GraphicsDesc> _graphics,
 			ResT<GBufferResource> _gbuffer, ResT<LightResource> _light, ResT<ToneMapResource> _output,
-			ResT<EnvironmentLightingResource> _environment, ResT<EnvironmentResource> _environmentSettings,
 			ResT<SunShadowTargets> _shadows, ResT<SunShadowResource> _shadowSettings)
 		{
 			if (0 == _frame->width || 0 == _frame->height) { return; }
@@ -1602,7 +1401,7 @@ namespace frost
 			if (_frame->active)
 			{
 				submitOutput(kRenderPassToneMap, GraphicsDebugView::None, *_frame, *_graphics, *_gbuffer, *_light, *_output,
-				*_environment, *_environmentSettings, *_shadows, *_shadowSettings);
+				*_shadows, *_shadowSettings);
 			}
 		}
 
@@ -1629,7 +1428,6 @@ namespace frost
 
 		static void update(ResT<RenderFrame> _frame, ResT<GraphicsDesc> _graphics,
 			ResT<GBufferResource> _gbuffer, ResT<LightResource> _light, ResT<ToneMapResource> _output,
-			ResT<EnvironmentLightingResource> _environment, ResT<EnvironmentResource> _environmentSettings,
 			ResT<SunShadowTargets> _shadows, ResT<SunShadowResource> _shadowSettings)
 		{
 			if (!_frame->active || _graphics->debugView <= GraphicsDebugView::None
@@ -1638,7 +1436,7 @@ namespace frost
 			bgfx::setViewFrameBuffer(kRenderPassDebug, BGFX_INVALID_HANDLE);
 			bgfx::setViewClear(kRenderPassDebug, BGFX_CLEAR_NONE);
 			submitOutput(kRenderPassDebug, _graphics->debugView, *_frame, *_graphics, *_gbuffer, *_light, *_output,
-				*_environment, *_environmentSettings, *_shadows, *_shadowSettings);
+				*_shadows, *_shadowSettings);
 		}
 	};
 
@@ -1653,7 +1451,6 @@ namespace frost
 				kRenderPassToneMap, kRenderPassDebug, kRenderPassUi };
 			for (double* time : times) { *time = -1.0; }
 			_stats->shadowMs = -1.0;
-			_stats->environmentMs = -1.0;
 			_stats->gpuMs = -1.0;
 			_stats->draws = stats->numDraw;
 			_stats->textures = stats->numTextures;
@@ -1674,10 +1471,6 @@ namespace frost
 					if (view.view == views[jj]) { *times[jj] = duration; }
 				}
 				if (view.view == kRenderPassShadow) { _stats->shadowMs = duration; }
-				else if (view.view < kRenderPassEnvironment + kEnvironmentViews)
-				{
-					_stats->environmentMs = max(0.0, _stats->environmentMs) + duration;
-				}
 			}
 		}
 	};
@@ -2033,9 +1826,7 @@ namespace frost
 		_app.insertResource<RenderFrame>();
 		_app.insertResource<GBufferResource>();
 		_app.insertResource<LightResource>();
-		_app.getWorld().initResource<EnvironmentResource>();
 		_app.getWorld().initResource<SunShadowResource>();
-		_app.insertResource<EnvironmentLightingResource>();
 		_app.insertResource<SunShadowTargets>();
 		_app.insertResource<ShadowDrawResource>();
 		_app.insertResource<SkyResource>();
@@ -2050,7 +1841,6 @@ namespace frost
 		startup = _app.addSystems(EcsStage::Startup, GBufferSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, LightSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, SkySystem::startup).after(startup).id();
-		startup = _app.addSystems(EcsStage::Startup, EnvironmentLightingSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, SunShadowSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, ToneMapSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, DebugViewSystem::startup).after(startup).id();
@@ -2062,7 +1852,6 @@ namespace frost
 		// Prepare shared frame data, then submit passes in dependency order.
 		SystemId update = _app.addSystems(EcsStage::PostUpdate, RendererSystem::update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, RenderFrameSystem::update).after(update).id();
-		update = _app.addSystems(EcsStage::PostUpdate, EnvironmentLightingSystem::update).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, GBufferSystem::update).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, SunShadowSystem::update).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, LightSystem::update).after(update).id();
@@ -2076,7 +1865,6 @@ namespace frost
 		SystemId shutdown = _app.addSystems(EcsStage::Shutdown, UiSystem::shutdown).id();
 		shutdown = _app.addSystems(EcsStage::Shutdown, ToneMapSystem::shutdown).after(shutdown).id();
 		shutdown = _app.addSystems(EcsStage::Shutdown, SunShadowSystem::shutdown).after(shutdown).id();
-		shutdown = _app.addSystems(EcsStage::Shutdown, EnvironmentLightingSystem::shutdown).after(shutdown).id();
 		shutdown = _app.addSystems(EcsStage::Shutdown, SkySystem::shutdown).after(shutdown).id();
 		shutdown = _app.addSystems(EcsStage::Shutdown, LightSystem::shutdown).after(shutdown).id();
 		shutdown = _app.addSystems(EcsStage::Shutdown, GBufferSystem::shutdown).after(shutdown).id();

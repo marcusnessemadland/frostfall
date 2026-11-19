@@ -7,7 +7,7 @@
 uniform vec4 u_sunDirection;
 uniform vec4 u_skyLuminanceXYZ;
 uniform vec4 u_perezCoeff[5];
-uniform vec4 u_parameters; // sun size, sun bloom, debug view, active sky.
+uniform vec4 u_parameters; // sun size, sun bloom, debug view, unused.
 uniform vec4 u_moonDirection;
 uniform vec4 u_moonUp;
 uniform vec4 u_moonColor; // full-phase disk RGB, unused.

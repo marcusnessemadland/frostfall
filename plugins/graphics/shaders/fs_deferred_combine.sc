@@ -8,7 +8,6 @@ $input v_texcoord0
  */
 
 #include "../common/common.sh"
-#include "environment.sh"
 #include "shadow.sh"
 
 SAMPLER2D(s_scene, 0);
@@ -16,10 +15,8 @@ SAMPLER2D(s_albedo, 1);
 SAMPLER2D(s_normal, 2);
 SAMPLER2D(s_depth, 3);
 SAMPLER2D(s_material, 4);
-SAMPLER2D(s_emissive, 12);
+SAMPLER2D(s_emissive, 6);
 uniform vec4 u_outputParameters; // x: exposure multiplier, y: dither, z: debug view, w: inverse depth range.
-uniform vec4 u_sceneCamera;
-uniform vec4 u_sceneDirection;
 uniform mat4 u_invSceneViewProj;
 
 // Khronos PBR Neutral, adapted for bgfx. Copyright 2024 The Khronos Group, Inc.
@@ -51,7 +48,7 @@ void main()
 {
 	vec3 scene = max(texture2D(s_scene, v_texcoord0).rgb, vec3_splat(0.0));
 	float mode = u_outputParameters.z;
-	if (mode < 0.5 || mode > 19.5)
+	if (mode < 0.5 || mode > 17.5)
 	{
 		vec3 color = toneMapNeutral(scene * u_outputParameters.x);
 		// Dither in display space, then let the sRGB backbuffer perform final encoding.
@@ -61,13 +58,13 @@ void main()
 		return;
 	}
 
-	if (mode > 14.5)
+	if (mode > 12.5)
 	{
 		float depth = 1.0;
 		if (u_shadowInfo.z > 0.5)
 		{
-			depth = mode > 18.5 ? texture2D(s_shadowAtlas, v_texcoord0).r
-				: shadowDepth(v_texcoord0, int(mode - 15.0));
+			depth = mode > 16.5 ? texture2D(s_shadowAtlas, v_texcoord0).r
+				: shadowDepth(v_texcoord0, int(mode - 13.0));
 		}
 		gl_FragColor = vec4(toLinearAccurate(vec3_splat(depth)), 1.0);
 		return;
@@ -92,25 +89,15 @@ void main()
 		{
 			vec3 position = reconstructWorldPosition(v_texcoord0, depth);
 			vec3 worldNormal = normalize(decodeNormalUint(normal.xyz));
-			if (mode < 12.5)
-			{
-				vec3 view = normalize(mix(u_sceneCamera.xyz - position, -u_sceneDirection.xyz, u_sceneCamera.w));
-				vec3 parameters = texture2D(s_material, v_texcoord0).rgb;
-				vec3 diffuse, specular;
-				environmentLighting(worldNormal, view, texture2D(s_albedo, v_texcoord0).rgb,
-					parameters.r, max(parameters.g, 0.045), parameters.b, diffuse, specular);
-				gl_FragColor = vec4(toneMapNeutral((mode < 11.5 ? diffuse : specular) * u_outputParameters.x), 1.0);
-				return;
-			}
 			float viewDepth = mul(u_sceneView, vec4(position, 1.0)).z;
-			if (mode < 13.5 && u_shadowInfo.z > 0.5 && viewDepth < u_shadowInfo.y)
+			if (mode < 11.5 && u_shadowInfo.z > 0.5 && viewDepth < u_shadowInfo.y)
 			{
 				int cascade = shadowCascade(viewDepth);
 				color = cascade == 0 ? vec3(1.0, 0.2, 0.2) : (cascade == 1 ? vec3(0.2, 1.0, 0.2)
 					: (cascade == 2 ? vec3(0.2, 0.4, 1.0) : vec3(1.0, 1.0, 0.2)));
 				color *= 0.25 + 0.75 * shadowVisibility(position, worldNormal);
 			}
-			else if (mode > 13.5) { color = vec3_splat(shadowVisibility(position, worldNormal)); }
+			else if (mode > 11.5) { color = vec3_splat(shadowVisibility(position, worldNormal)); }
 			gl_FragColor = vec4(toLinearAccurate(color), 1.0);
 			return;
 		}

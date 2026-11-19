@@ -39,7 +39,7 @@ namespace frost
 		Entity canvas, panel, title, separator, list;
 		Entity current, editing, editingTarget;
 		Entity frameTime, fps, frames, entities, dimensions, focus;
-		Entity debugView, graphicsStats[18], moonStats[4];
+		Entity debugView, graphicsStats[17], moonStats[4];
 		DynamicStorageT<DevmenuEntry> entries;
 		DynamicStorageT<Entity> rows;
 		uint32_t count = 0, rowCount = 0;
@@ -232,7 +232,7 @@ namespace frost
 			const Entity statistics = devmenuFolder(_world, _menu->graphics, "Statistics", 4);
 			const char* labels[] = { "GPU (ms)", "Geometry (ms)", "Lighting (ms)", "Sky (ms)",
 				"Tone map (ms)", "Debug (ms)", "UI (ms)", "Draw calls", "Textures", "Targets (MiB)",
-				"Environment update (ms)", "Shadow atlas (ms)",
+				"Shadow atlas (ms)",
 				"Cascade 0 casters", "Cascade 1 casters", "Cascade 2 casters", "Cascade 3 casters",
 				"Shadow draw calls", "Shadow triangles" };
 			for (uint32_t ii = 0; ii < FROST_COUNTOF(labels); ++ii)
@@ -240,12 +240,7 @@ namespace frost
 				_state->graphicsStats[ii] = devmenuReadout(_world, statistics, labels[ii], int32_t(ii));
 			}
 
-			const Entity environment = devmenuFolder(_world, _menu->graphics, "Environment", 5);
-			devmenuValue(_world, environment, "Intensity", DevmenuFloatComponent{ 0, 0, 10, 0.1, 2 }, 0,
-				devmenuResource<&EnvironmentResource::intensity>());
-			devmenuValue(_world, environment, "Update interval (s)", DevmenuFloatComponent{ 0, 0, 5, 0.05, 2 }, 1,
-				devmenuResource<&EnvironmentResource::updateInterval>());
-			const Entity shadows = devmenuFolder(_world, _menu->graphics, "Directional shadows", 6);
+			const Entity shadows = devmenuFolder(_world, _menu->graphics, "Directional shadows", 5);
 			devmenuValue(_world, shadows, "Tile resolution", DevmenuIntComponent{ 0, 256, 4096, 256 }, 0,
 				devmenuResource<&SunShadowResource::resolution>());
 			devmenuValue(_world, shadows, "Distance", DevmenuFloatComponent{ 0, 0, 1000, 5, 1 }, 1,
@@ -299,7 +294,7 @@ namespace frost
 				const char* views[] = { "Scene", "Base color", "World normals", "Device depth",
 					"Linear depth", "World position", "HDR luminance",
 					"Metallic", "Roughness", "Occlusion", "Emissive",
-					"Environment diffuse", "Environment specular", "Shadow cascades", "Shadow visibility",
+					"Shadow cascades", "Shadow visibility",
 					"Shadow map 0", "Shadow map 1", "Shadow map 2", "Shadow map 3", "Shadow atlas",
 					"Lunar sky", "Moon direct light", "Moon disk" };
 				devmenuSetReadout(_world, _state.debugView, views[clamp(int32_t(graphics->debugView), 0, int32_t(FROST_COUNTOF(views) - 1))]);
@@ -320,21 +315,18 @@ namespace frost
 				devmenuSetReadout(_world, _state.graphicsStats[8], buffer);
 				snprintf(buffer, sizeof(buffer), "%.2f", double(stats->renderTargetBytes) / (1024 * 1024));
 				devmenuSetReadout(_world, _state.graphicsStats[9], buffer);
-				if (stats->environmentMs >= 0) { snprintf(buffer, sizeof(buffer), "%.3f", stats->environmentMs); }
-				else { snprintf(buffer, sizeof(buffer), "Unavailable"); }
-				devmenuSetReadout(_world, _state.graphicsStats[10], buffer);
 				if (stats->shadowMs >= 0) { snprintf(buffer, sizeof(buffer), "%.3f", stats->shadowMs); }
 				else { snprintf(buffer, sizeof(buffer), "Unavailable"); }
-				devmenuSetReadout(_world, _state.graphicsStats[11], buffer);
+				devmenuSetReadout(_world, _state.graphicsStats[10], buffer);
 				for (uint32_t ii = 0; ii < 4; ++ii)
 				{
 					snprintf(buffer, sizeof(buffer), "%u", stats->shadowCasters[ii]);
-					devmenuSetReadout(_world, _state.graphicsStats[12 + ii], buffer);
+					devmenuSetReadout(_world, _state.graphicsStats[11 + ii], buffer);
 				}
 				snprintf(buffer, sizeof(buffer), "%u", stats->shadowDraws);
-				devmenuSetReadout(_world, _state.graphicsStats[16], buffer);
+				devmenuSetReadout(_world, _state.graphicsStats[15], buffer);
 				snprintf(buffer, sizeof(buffer), "%llu", (unsigned long long)stats->shadowTriangles);
-				devmenuSetReadout(_world, _state.graphicsStats[17], buffer);
+				devmenuSetReadout(_world, _state.graphicsStats[16], buffer);
 			}
 
 			// The first sky/light by entity ID and the explicitly active camera.

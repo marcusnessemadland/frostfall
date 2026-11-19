@@ -41,10 +41,10 @@ void main()
 {
 	vec3 direction = normalize(v_viewDir);
 	vec3 color;
-	if (u_parameters.z > 19.5)
+	if (u_parameters.z > 17.5)
 	{
-		color = u_parameters.z < 20.5 ? evaluateMoonSky(direction)
-			: (u_parameters.z > 21.5 ? evaluateMoon(direction) : vec3_splat(0.0));
+		color = u_parameters.z < 18.5 ? evaluateMoonSky(direction)
+			: (u_parameters.z > 19.5 ? evaluateMoon(direction) : vec3_splat(0.0));
 	}
 	else
 	{

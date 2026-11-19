@@ -84,8 +84,6 @@ namespace frost
 			Roughness,
 			Occlusion,
 			Emissive,
-			EnvironmentDiffuse,
-			EnvironmentSpecular,
 			Cascades,
 			ShadowVisibility,
 			ShadowMap0,
@@ -215,13 +213,6 @@ namespace frost
 		float filterRadius = 1.0f;
 		bool lods = true;
 		bool instancing = true;
-	};
-
-	///
-	struct EnvironmentResource
-	{
-		float intensity = 1.0f;
-		float updateInterval = 0.25f; //!< TODO: Lets do every frame?
 	};
 
 	/// TODO: This is bloated with data
@@ -359,7 +350,6 @@ namespace frost
 		double gpuMs = -1.0;
 		double geometryMs = -1.0, lightMs = -1.0, skyMs = -1.0;
 		double toneMapMs = -1.0, debugViewMs = -1.0, uiMs = -1.0;
-		double environmentMs = -1.0;
 		double shadowMs = -1.0;
 		uint32_t shadowCasters[4] = {};
 		uint32_t shadowDraws = 0;

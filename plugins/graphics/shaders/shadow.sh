@@ -3,7 +3,7 @@
  * License: See LICENSE in the project root.
  */
 
-SAMPLER2D(s_shadowAtlas, 8);
+SAMPLER2D(s_shadowAtlas, 5);
 uniform mat4 u_shadowMatrix[4];
 uniform vec4 u_shadowSplits;
 uniform vec4 u_shadowTexels; // World units per texel, one per cascade.
