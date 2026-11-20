@@ -15,7 +15,6 @@ CMakeUserPresets.json
 *.asi
 build/
 plugins/graphics/tools/bin/
-examples/helloworld/cube.mesh
 plugins/graphics/shaders/.shader-settings*
 *.TMP
 *.dxvk-cache

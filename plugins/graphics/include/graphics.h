@@ -69,36 +69,6 @@ namespace frost
 	};
 
 	///
-	struct GraphicsDebugView
-	{
-		enum Enum
-		{
-			None,
-			BaseColor,
-			Normals,
-			Depth,
-			LinearDepth,
-			WorldPosition,
-			Luminance,
-			Metallic,
-			Roughness,
-			Occlusion,
-			Emissive,
-			Cascades,
-			ShadowVisibility,
-			ShadowMap0,
-			ShadowMap1,
-			ShadowMap2,
-			ShadowMap3,
-			ShadowAtlas,
-			LunarSky,
-			MoonLight,
-			MoonDisk,
-			Count
-		};
-	};
-
-	///
 	struct TextureAssetFlags
 	{
 		enum : uint32_t
@@ -196,26 +166,81 @@ namespace frost
 		Vec3 direction = { 0.0f, 1.0f, 0.0f }; //!< World direction toward the light; must be finite and nonzero.
 		Vec3 color = { 1.0f, 1.0f, 1.0f };     //!< Linear RGB illumination, clamped nonnegative.
 		float intensity = 1.0f;						 //!< Nonnegative multiplier; zero disables the light.
+		bool isStatic = false; //!< Generate shadows once; keep false for moving lights or cameras.
 	};
 
-	/// TODO: Bloat and also maybe call it direct shadows and in the future local shadows for points lights etc.
+	/// Local lights use TransformComponent. Local +Z is the emission direction.
+	struct PointLightComponent
+	{
+		Vec3 color = { 1.0f, 1.0f, 1.0f };
+		float intensity = 10.0f; //!< Candela, with inverse square attenuation.
+		float range = 10.0f;
+		float sourceRadius = 0.05f;
+		bool castShadows = true;
+		bool isStatic = true; //!< Generate shadows once; false updates them every frame.
+	};
+
+	struct SpotLightComponent
+	{
+		Vec3 color = { 1.0f, 1.0f, 1.0f };
+		float intensity = 10.0f;
+		float range = 10.0f;
+		float sourceRadius = 0.05f;
+		float innerAngle = 25.0f; //!< Cone half angles in degrees.
+		float outerAngle = 40.0f;
+		bool castShadows = true;
+		bool isStatic = true; //!< Generate shadows once; false updates them every frame.
+	};
+
+	struct RectLightComponent
+	{
+		Vec3 color = { 1.0f, 1.0f, 1.0f };
+		float intensity = 10.0f; //!< Emitted radiance per unit area.
+		float range = 10.0f;
+		float sourceRadius = 0.05f;
+		float width = 1.0f;
+		float height = 1.0f;
+		bool twoSided = false;
+		bool castShadows = true; //!< Visibility is sampled from the rectangle center.
+		bool isStatic = true; //!< Generate shadows once; false updates them every frame.
+	};
+
+	/// Captures distant environment independently of atmosphere and direct lights.
+	/// TransformComponent supplies the capture position; an absent transform uses the origin.
+	struct SkyLightComponent
+	{
+		Vec3 color = { 1.0f, 1.0f, 1.0f };
+		float intensity = 1.0f;
+		float skyDistanceThreshold = 150000.0f;
+		uint32_t resolution = 128; //!< Power of two, clamped to 16..128.
+		bool isStatic = false; //!< Capture and filter the environment once; false updates every frame.
+	};
+
+	struct LocalShadowResource
+	{
+		uint16_t resolution = 512; //!< Clamped to the device's atlas size limit.
+		uint16_t maxLights = 30; //!< Shadowed local lights; remaining lights still illuminate.
+		float depthBias = 0.002f; //!< World units.
+		float normalBias = 0.01f;
+	};
+
+	/// Cascaded directional shadows.
 	struct SunShadowResource
 	{
 		Entity light;
 		uint16_t resolution = 1024;
 		float distance = 150.0f;
+		float distanceScale = 1.0f; //!< Scales receiver distance before fitting all cascades.
 		float splitLambda = 0.7f;
 		float casterDistance = 200.0f;
 		float depthBias = 0.002f;
 		float normalBias = 1.0f;
 		float blend = 0.1f;
 		float filterRadius = 1.0f;
-		bool lods = true;
-		bool instancing = true;
 	};
 
 	/// TODO: This is bloated with data
-	struct SkyComponent
+	struct SkyAtmosphereComponent
 	{
 		enum Month
 		{
@@ -254,7 +279,6 @@ namespace frost
 		Vec3 moonLightDirection = { 0.0f, 1.0f, 0.0f };
 		Vec3 moonUp = { 0.0f, 1.0f, 0.0f };
 		Vec3 moonColor = { 0.0f, 0.0f, 0.0f };
-		float moonPhase = 1.0f;
 		float moonIlluminance = 0.0f;
 		float moonElevation = -90.0f;
 		float moonPhaseBrightness = 1.0f;
@@ -342,27 +366,14 @@ namespace frost
 		uint32_t fillColor = 0x80c0ffff;
 	};
 
-	/// Latest available bgfx measurements. Negative GPU times mean unavailable.
-	/// TODO: Bloat, bloat, bloat. Lets look into how to improve this
-	struct GraphicsStatsResource
-	{
-		double gpuMs = -1.0;
-		double geometryMs = -1.0, lightMs = -1.0, skyMs = -1.0;
-		double toneMapMs = -1.0, debugViewMs = -1.0, uiMs = -1.0;
-		double shadowMs = -1.0;
-		uint32_t shadowCasters[4] = {};
-		uint32_t shadowDraws = 0;
-		uint64_t shadowTriangles = 0;
-		uint32_t draws = 0;
-		uint16_t textures = 0;
-		int64_t renderTargetBytes = 0;
-	};
-
 	///
 	MeshHandle createMesh(const Memory* _mem, const MaterialHandle* _materials, uint16_t _numMaterials, Error* _err = ErrorIgnore{});
 
 	///
 	MeshHandle createMesh(const Memory* _mem, Error* _err = ErrorIgnore{});
+
+	///
+	Guid getGuid(MeshHandle _handle);
 
 	///
 	void addRef(MeshHandle _handle);
@@ -380,6 +391,9 @@ namespace frost
 	TextureHandle createTexture(const Memory* _mem, Error* _err = ErrorIgnore{});
 
 	///
+	Guid getGuid(TextureHandle _handle);
+
+	///
 	void addRef(TextureHandle _handle);
 
 	///
@@ -390,6 +404,9 @@ namespace frost
 
 	///
 	MaterialHandle createMaterial(const Memory* _mem, const TextureHandle* _textures, uint16_t _numTextures, Error* _err = ErrorIgnore{});
+
+	///
+	Guid getGuid(MaterialHandle _handle);
 
 	///
 	void addRef(MaterialHandle _handle);
@@ -405,8 +422,6 @@ namespace frost
 	///
 	struct GraphicsDesc
 	{
-		uint32_t width = 1280; //!< Initial render width in pixels.
-		uint32_t height = 720; //!< Initial render height in pixels.
 		RendererType::Enum type = RendererType::Count; //!< Renderer backend graphics API .
 
 		/// TODO: Define macros for static arrays and make them synced with BGFX_CONFIG_ macros
@@ -414,12 +429,7 @@ namespace frost
 		uint16_t maxTextures = 1024;
 		uint16_t maxMaterials = 1024;
 
-		// TODO: Should these be runtime settings?
-		GraphicsDebugView::Enum debugView = GraphicsDebugView::None;
-		float debugDepth = 100.0f;
 		bool preventBanding = true;
-		bool gpuProfiling = true;
-		Entity debugLight; //!< Explicit light entity shown by GraphicsDebugView::MoonLight.
 	};
 
 	/// Runtime graphics configuration read every frame.
@@ -428,6 +438,32 @@ namespace frost
 	///
 	struct GraphicsSettings
 	{
+		bool instancing = true;
+		bool frustumCulling = true;
+		bool lods = true;
+		float lodPixels = 128.0f; //!< Projected diameter below which detail starts decreasing.
+	};
+
+	/// Submitted work for the most recently prepared frame.
+	struct MeshPassStats
+	{
+		uint32_t draws = 0;
+		uint32_t instances = 0;
+		uint32_t culled = 0;
+		uint32_t masked = 0;
+		uint64_t triangles = 0;
+	};
+
+	struct GraphicsStatsResource
+	{
+		MeshPassStats geometry;
+		MeshPassStats shadows;
+		MeshPassStats localShadows;
+		MeshPassStats environment;
+		uint32_t localLights = 0;
+		uint32_t meshes = 0;
+		uint32_t visibleMeshes = 0;
+		uint32_t sharedGeometries = 0;
 	};
 
 	/// Creates the graphics api backend and handles rendering.

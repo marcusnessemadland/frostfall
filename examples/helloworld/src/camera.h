@@ -41,6 +41,9 @@ namespace
 		frost::Quaternion desiredRotation = { 0.0f, 0.0f, 0.0f, 1.0f };
 		CameraMode::Enum previousMode = CameraMode::Orbit;
 
+		frost::Vec3 startPosition = { 0, 0, 0 };
+		frost::Quaternion startRotation = { 0, 0, 0, 1 };
+
 		frost::Entity target; //!< Optional entity to orbit, must contain a transform component
 		bool initialized = false; // TODO: Is this really needed?
 	};
@@ -49,12 +52,24 @@ namespace
 	///
 	struct CameraSystem
 	{
+		static void setup(frost::World& _world, frost::Entity _camera)
+		{
+			auto* controller = _world.emplace<CameraControllerComponent>(_camera);
+			controller->distance = 10.0f;
+			controller->mode = CameraMode::Flying;
+			controller->target = _camera;
+			const auto* camera = _world.get<frost::CameraComponent>(_camera);
+			controller->startPosition = camera->position;
+			controller->startRotation = camera->rotation;
+			_world.getResourceMut<frost::ActiveCameraResource>()->entity = _camera;
+		}
+
 		static void reset(frost::CameraComponent& _camera, CameraControllerComponent& _controller, const frost::TransformComponent* _target)
 		{
 			_camera.position = CameraMode::Orbit == _controller.mode && NULL != _target
 				? frost::sub(_target->position, { 0.0f, 0.0f, _controller.distance })
-				: frost::Vec3{ 0.0f, 3.0f, -5.0f };
-			_camera.rotation = { 0.0f, 0.0f, 0.0f, 1.0f };
+				: _controller.startPosition;
+			_camera.rotation = CameraMode::Orbit == _controller.mode ? frost::Quaternion{ 0, 0, 0, 1 } : _controller.startRotation;
 			_controller.desiredPosition = _camera.position;
 			_controller.desiredRotation = _camera.rotation;
 			_controller.previousMode = _controller.mode;

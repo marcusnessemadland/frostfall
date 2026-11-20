@@ -17,6 +17,7 @@
 #include <frost/handlealloc.h>
 #include <frost/readerwriter.h>
 #include <frost/sort.h>
+#include <frost/hash.h>
 
 #include <meshoptimizer/src/meshoptimizer.h>
 
@@ -89,6 +90,7 @@ namespace frost
 		bgfx::TextureInfo info = {};
 		uint32_t refCount = 0;
 		bool srgb = false;
+		uint8_t minAlpha = 0; // Conservative lower bound across all mip levels.
 	};
 
 	struct TextureContext
@@ -110,6 +112,12 @@ namespace frost
 			? &s_textureContext->refs[_handle.idx] : NULL;
 	}
 
+	Guid getGuid(TextureHandle _handle)
+	{
+		const TextureRef* texture = getTextureRef(_handle);
+		return NULL != texture ? texture->guid : Guid{};
+	}
+
 	void addRef(TextureHandle _handle)
 	{
 		TextureRef* texture = getTextureRef(_handle);
@@ -128,6 +136,51 @@ namespace frost
 			*texture = TextureRef{};
 			s_textureContext->handles->free(_handle.idx);
 		}
+	}
+
+	static uint8_t minimumAlpha(const bimg::ImageMip& _mip, bimg::TextureFormat::Enum _format)
+	{
+		uint8_t result = 255;
+		if (bimg::TextureFormat::RGBA8 == _format)
+		{
+			for (uint32_t ii = 3; ii < _mip.m_size; ii += 4)
+			{
+				result = min(result, _mip.m_data[ii]);
+			}
+		}
+		else if (bimg::TextureFormat::BC3 == _format)
+		{
+			for (uint32_t ii = 0; ii < _mip.m_size && result > 0; ii += 16)
+			{
+				const uint8_t* block = _mip.m_data + ii;
+				uint8_t alpha[8] = { block[0], block[1], 0, 0, 0, 0, 0, 255 };
+				uint32_t count = 4;
+				if (alpha[0] > alpha[1])
+				{
+					count = 6;
+				}
+				for (uint32_t jj = 0; jj < count; ++jj)
+				{
+					alpha[jj + 2] = uint8_t(((count - jj) * alpha[0] + (jj + 1) * alpha[1]) / (count + 1));
+				}
+				uint64_t selectors = 0;
+				for (uint32_t jj = 0; jj < 6; ++jj)
+				{
+					selectors |= uint64_t(block[jj + 2]) << (jj * 8);
+				}
+				for (uint32_t jj = 0; jj < 16; ++jj)
+				{
+					result = min(result, alpha[selectors & 7]);
+					selectors >>= 3;
+				}
+			}
+		}
+		else
+		{
+			// Unknown alpha encodings keep their alpha test.
+			return 0;
+		}
+		return result;
 	}
 
 	static TextureHandle textureCreate(const Memory* _mem, Error* _err)
@@ -168,6 +221,7 @@ namespace frost
 			FROST_ERROR_SET(_err, kErrorTextureFormat, "Texture requires a supported 2D DDS image.");
 			return handle;
 		}
+		uint8_t minAlpha = 255;
 		// Validate every mip before handing the container to the backend.
 		for (uint8_t ii = 0; ii < image.m_numMips; ++ii)
 		{
@@ -177,6 +231,7 @@ namespace frost
 				FROST_ERROR_SET(_err, kErrorTextureFormat, "Texture mip data is truncated.");
 				return handle;
 			}
+			minAlpha = min(minAlpha, minimumAlpha(mip, image.m_format));
 		}
 		handle.idx = s_textureContext->handles->alloc();
 		if (!isValid(handle))
@@ -187,6 +242,7 @@ namespace frost
 		TextureRef texture;
 		texture.guid = header.guid;
 		texture.srgb = srgb;
+		texture.minAlpha = minAlpha;
 		texture.texture = bgfx::createTexture(bgfx::copy(data, size), srgb ? BGFX_TEXTURE_SRGB : 0, 0, &texture.info);
 		if (!bgfx::isValid(texture.texture))
 		{
@@ -384,6 +440,12 @@ namespace frost
 		return handle;
 	}
 
+	Guid getGuid(MaterialHandle _handle)
+	{
+		const MaterialRef* material = getMaterialRef(_handle);
+		return NULL != material ? material->guid : Guid{};
+	}
+
 	void addRef(MaterialHandle _handle)
 	{
 		MaterialRef* material = getMaterialRef(_handle);
@@ -455,9 +517,21 @@ namespace frost
 		uint32_t numGroups = 0;
 	};
 
+	struct MeshGeometry
+	{
+		MeshGeometry* next = NULL;
+		const Memory* data = NULL; // Serialized geometry for collision-checked sharing.
+		MeshLod* lods = NULL;
+		uint32_t hash = 0;
+		uint32_t refCount = 0;
+		uint16_t numLods = 0;
+		uint16_t numMaterials = 0;
+	};
+
 	struct MeshRef
 	{
 		Guid       guid;
+		MeshGeometry* geometry = NULL;
 		MeshLod* lods = NULL; // Highest detail first; all levels share material slots.
 		MeshMaterialSlot* materials = NULL;
 		uint16_t numMaterials = 0;
@@ -470,6 +544,7 @@ namespace frost
 		AllocatorI*  allocator;
 		HandleAlloc* handles;
 		MeshRef*     refs;
+		MeshGeometry* geometries[256];
 	};
 
 	static MeshContext* s_meshContext = NULL;
@@ -485,7 +560,25 @@ namespace frost
 	static void destroyMesh(MeshRef& _mesh)
 	{
 		AllocatorI* allocator = s_meshContext->allocator;
-		for (uint16_t lodIndex = 0; NULL != _mesh.lods && lodIndex < _mesh.numLods; ++lodIndex)
+		// Material slots belong to the asset; geometry can outlive any one asset.
+		bool destroyGeometry = true;
+		if (NULL != _mesh.geometry)
+		{
+			MeshGeometry* geometry = _mesh.geometry;
+			destroyGeometry = 0 == --geometry->refCount;
+			if (destroyGeometry)
+			{
+				MeshGeometry** entry = &s_meshContext->geometries[geometry->hash & 255];
+				while (*entry != geometry)
+				{
+					entry = &(*entry)->next;
+				}
+				*entry = geometry->next;
+				release(geometry->data);
+				free(allocator, geometry);
+			}
+		}
+		for (uint16_t lodIndex = 0; destroyGeometry && NULL != _mesh.lods && lodIndex < _mesh.numLods; ++lodIndex)
 		{
 			MeshLod& lod = _mesh.lods[lodIndex];
 			for (uint32_t ii = 0; NULL != lod.groups && ii < lod.numGroups; ++ii)
@@ -508,7 +601,10 @@ namespace frost
 			release(_mesh.materials[ii].material);
 		}
 		free(allocator, _mesh.materials);
-		free(allocator, _mesh.lods);
+		if (destroyGeometry)
+		{
+			free(allocator, _mesh.lods);
+		}
 		_mesh = MeshRef{};
 	}
 
@@ -954,7 +1050,7 @@ namespace frost
 		{
 			return handle;
 		}
-		if (kAssetTypeMesh != header.type || (2 != header.payloadVersion && kMeshVersion != header.payloadVersion)
+		if (kAssetTypeMesh != header.type || kMeshVersion != header.payloadVersion
 			|| header.dependencyCount != _numMaterials || (0 != _numMaterials && NULL == _materials))
 		{
 			FROST_ERROR_SET(_err, kErrorMeshFormat, "Mesh asset type, version, or dependencies are unsupported.");
@@ -966,16 +1062,7 @@ namespace frost
 		MeshRef mesh;
 		mesh.guid = header.guid;
 
-		uint32_t legacyGroups = 0;
-		if (2 == header.payloadVersion)
-		{
-			mesh.numLods = 1;
-			readHE(&reader, legacyGroups, true, _err);
-		}
-		else
-		{
-			readHE(&reader, mesh.numLods, true, _err);
-		}
+		readHE(&reader, mesh.numLods, true, _err);
 		if (!_err->isOk() || 0 == mesh.numLods || mesh.numLods > reader.remaining() / 140)
 		{
 			FROST_ERROR_SET(_err, kErrorMeshFormat, "Mesh LOD count is invalid.");
@@ -1036,46 +1123,71 @@ namespace frost
 		}
 		if (!_err->isOk()) { destroyMesh(mesh); return handle; }
 
-		mesh.lods = (MeshLod*)alloc(s_meshContext->allocator, sizeof(MeshLod) * mesh.numLods);
-		if (NULL == mesh.lods)
+		const uint32_t geometrySize = reader.remaining();
+		const uint8_t* geometryData = (const uint8_t*)_mem->data + header.payloadOffset + header.payloadSize - geometrySize;
+		HashMurmur2A hash;
+		hash.begin();
+		hash.add(mesh.numLods);
+		hash.add(mesh.numMaterials);
+		hash.add(geometryData, geometrySize);
+		const uint32_t geometryHash = hash.end();
+		for (MeshGeometry* geometry = s_meshContext->geometries[geometryHash & 255]; NULL != geometry; geometry = geometry->next)
 		{
-			destroyMesh(mesh);
-			FROST_ERROR_SET(_err, kErrorMeshCreate, "Unable to allocate mesh LODs.");
-			return handle;
-		}
-		for (uint16_t ii = 0; ii < mesh.numLods; ++ii)
-		{
-			FROST_PLACEMENT_NEW(&mesh.lods[ii], MeshLod)();
-		}
-		for (uint16_t lodIndex = 0; lodIndex < mesh.numLods && _err->isOk(); ++lodIndex)
-		{
-			MeshLod& lod = mesh.lods[lodIndex];
-			if (2 == header.payloadVersion) { lod.numGroups = legacyGroups; }
-			else { readHE(&reader, lod.numGroups, true, _err); }
-			if (!_err->isOk() || 0 == lod.numGroups || UINT16_MAX < lod.numGroups || lod.numGroups > reader.remaining() / 140)
+			if (geometryHash == geometry->hash && mesh.numLods == geometry->numLods
+				&& mesh.numMaterials == geometry->numMaterials && geometrySize == geometry->data->size
+				&& 0 == memCmp(geometryData, geometry->data->data, geometrySize))
 			{
-				FROST_ERROR_SET(_err, kErrorMeshFormat, "Mesh LOD group count is invalid.");
+				mesh.geometry = geometry;
+				mesh.lods = geometry->lods;
+				++geometry->refCount;
+				reader.seek(geometrySize, Whence::Current);
 				break;
 			}
-			lod.groups = (MeshGroup*)alloc(s_meshContext->allocator, sizeof(MeshGroup) * lod.numGroups);
-			if (NULL == lod.groups)
+		}
+
+		if (NULL == mesh.geometry)
+		{
+			mesh.lods = (MeshLod*)alloc(s_meshContext->allocator, sizeof(MeshLod) * mesh.numLods);
+			if (NULL == mesh.lods)
 			{
-				FROST_ERROR_SET(_err, kErrorMeshCreate, "Unable to allocate mesh groups.");
-				break;
+				destroyMesh(mesh);
+				FROST_ERROR_SET(_err, kErrorMeshCreate, "Unable to allocate mesh LODs.");
+				return handle;
 			}
-			for (uint32_t ii = 0; ii < lod.numGroups; ++ii)
+			for (uint16_t ii = 0; ii < mesh.numLods; ++ii)
 			{
-				FROST_PLACEMENT_NEW(&lod.groups[ii], MeshGroup)();
+				FROST_PLACEMENT_NEW(&mesh.lods[ii], MeshLod)();
 			}
-			for (uint32_t ii = 0; ii < lod.numGroups && _err->isOk(); ++ii)
+			for (uint16_t lodIndex = 0; lodIndex < mesh.numLods && _err->isOk(); ++lodIndex)
 			{
-				MeshGroup& group = lod.groups[ii];
-				if (!readMeshGroup(reader, group, _err)) { break; }
-				if (group.materialSlot >= mesh.numMaterials)
+				MeshLod& lod = mesh.lods[lodIndex];
+				readHE(&reader, lod.numGroups, true, _err);
+				if (!_err->isOk() || 0 == lod.numGroups || UINT16_MAX < lod.numGroups || lod.numGroups > reader.remaining() / 140)
 				{
-					FROST_ERROR_SET(_err, kErrorMeshFormat, "Mesh group material slot is invalid.");
+					FROST_ERROR_SET(_err, kErrorMeshFormat, "Mesh LOD group count is invalid.");
+					break;
+				}
+				lod.groups = (MeshGroup*)alloc(s_meshContext->allocator, sizeof(MeshGroup) * lod.numGroups);
+				if (NULL == lod.groups)
+				{
+					FROST_ERROR_SET(_err, kErrorMeshCreate, "Unable to allocate mesh groups.");
+					break;
+				}
+				for (uint32_t ii = 0; ii < lod.numGroups; ++ii)
+				{
+					FROST_PLACEMENT_NEW(&lod.groups[ii], MeshGroup)();
+				}
+				for (uint32_t ii = 0; ii < lod.numGroups && _err->isOk(); ++ii)
+				{
+					MeshGroup& group = lod.groups[ii];
+					if (!readMeshGroup(reader, group, _err)) { break; }
+					if (group.materialSlot >= mesh.numMaterials)
+					{
+						FROST_ERROR_SET(_err, kErrorMeshFormat, "Mesh group material slot is invalid.");
+					}
 				}
 			}
+
 		}
 
 		if (_err->isOk() && 0 != reader.remaining() )
@@ -1098,6 +1210,30 @@ namespace frost
 			return handle;
 		}
 
+		if (NULL == mesh.geometry)
+		{
+			MeshGeometry* geometry = (MeshGeometry*)alloc(s_meshContext->allocator, sizeof(MeshGeometry));
+			const Memory* data = copyMemory(s_meshContext->allocator, geometryData, geometrySize);
+			if (NULL == geometry || NULL == data)
+			{
+				free(s_meshContext->allocator, geometry);
+				release(data);
+				s_meshContext->handles->free(handle.idx);
+				destroyMesh(mesh);
+				FROST_ERROR_SET(_err, kErrorMeshCreate, "Unable to allocate shared mesh geometry.");
+				return {};
+			}
+			FROST_PLACEMENT_NEW(geometry, MeshGeometry)();
+			geometry->data = data;
+			geometry->lods = mesh.lods;
+			geometry->hash = geometryHash;
+			geometry->refCount = 1;
+			geometry->numLods = mesh.numLods;
+			geometry->numMaterials = mesh.numMaterials;
+			geometry->next = s_meshContext->geometries[geometryHash & 255];
+			s_meshContext->geometries[geometryHash & 255] = geometry;
+			mesh.geometry = geometry;
+		}
 		mesh.refCount = 1;
 		s_meshContext->refs[handle.idx] = mesh;
 		return handle;
@@ -1129,6 +1265,12 @@ namespace frost
 	{
 		const MeshRef* mesh = getMeshRef(_handle);
 		return NULL != mesh && _slot < mesh->numMaterials ? StringView(mesh->materials[_slot].name) : StringView();
+	}
+
+	Guid getGuid(MeshHandle _handle)
+	{
+		const MeshRef* mesh = getMeshRef(_handle);
+		return NULL != mesh ? mesh->guid : Guid{};
 	}
 
 	void addRef(MeshHandle _handle)
@@ -1258,6 +1400,7 @@ namespace frost
 			context->allocator = allocator;
 			context->handles = FROST_PLACEMENT_NEW(handles, HandleAlloc)(_graphics->maxMeshes);
 			context->refs = refs;
+			memSet(context->geometries, 0, sizeof(context->geometries));
 
 			for (uint16_t ii = 0; ii < _graphics->maxMeshes; ++ii)
 			{
@@ -1297,6 +1440,20 @@ namespace frost
 		return true;
 	}
 
+	static bool getWorldTransform(float* _matrix, const World& _world, Entity _entity,
+		const TransformComponent* _transform)
+	{
+		if (!getMeshTransform(_matrix, _transform)) { return false; }
+		for (Entity parent = _world.getParent(_entity); _world.contains(parent); parent = _world.getParent(parent))
+		{
+			float local[16], combined[16];
+			if (!getMeshTransform(local, _world.get<TransformComponent>(parent))) { return false; }
+			mtxMul(combined, _matrix, local);
+			memCopy(_matrix, combined, sizeof(combined));
+		}
+		return true;
+	}
+
 	static const MaterialCreate& getMeshMaterial(const MeshComponent& _instance, const MeshRef& _mesh, uint16_t _slot)
 	{
 		MaterialHandle handle = _mesh.materials[_slot].material;
@@ -1310,10 +1467,28 @@ namespace frost
 		return NULL != material ? material->desc : fallback;
 	}
 
-	static uint64_t meshState(const MaterialCreate& _material, const TransformComponent* _transform)
+	static bool isMaterialMasked(const MaterialCreate& _material)
+	{
+		if (0 == (_material.flags & MaterialFlags::Masked))
+		{
+			return false;
+		}
+		const TextureRef* texture = getTextureRef(_material.textures[MaterialTexture::BaseColor]);
+		float alpha = _material.baseColor[3];
+		if (NULL != texture)
+		{
+			alpha *= float(texture->minAlpha) / 255.0f;
+		}
+		return alpha < _material.alphaCutoff;
+	}
+
+	static uint64_t meshState(const MaterialCreate& _material, const float* _matrix)
 	{
 		uint64_t state = 0;
-		if (NULL != _transform && _transform->scale.x * _transform->scale.y * _transform->scale.z < 0.0f)
+		const Vec3 x = { _matrix[0], _matrix[1], _matrix[2] };
+		const Vec3 y = { _matrix[4], _matrix[5], _matrix[6] };
+		const Vec3 z = { _matrix[8], _matrix[9], _matrix[10] };
+		if (dot(cross(x, y), z) < 0.0f)
 		{
 			state |= BGFX_STATE_FRONT_CCW;
 		}

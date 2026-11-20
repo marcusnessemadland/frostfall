@@ -14,12 +14,6 @@
 #include <bimg/decode.h>
 #include <bimg/encode.h>
 
-#if 0
-#	define DBG(_format, ...) bx::printf("" _format "\n", ##__VA_ARGS__)
-#else
-#	define DBG(...) BX_NOOP()
-#endif // DEBUG
-
 #include <bx/bx.h>
 #include <bx/commandline.h>
 #include <bx/file.h>
@@ -33,38 +27,6 @@ BX_ERROR_RESULT(TEXTRUREC_ERROR, BX_MAKEFOURCC('t', 'c', 0, 0) );
 
 struct Options
 {
-	void dump()
-	{
-		DBG("Options:\n"
-			"\t  maxSize: %d\n"
-			"\t  mipSkip: %d\n"
-			"\t     edge: %f\n"
-			"\t   format: %s\n"
-			"\t     mips: %s\n"
-			"\tnormalMap: %s\n"
-			"\t      iqa: %s\n"
-			"\t      pma: %s\n"
-			"\t      sdf: %s\n"
-			"\t radiance: %s\n"
-			"\t equirect: %s\n"
-			"\t    strip: %s\n"
-			"\t   linear: %s\n"
-			, maxSize
-			, mipSkip
-			, edge
-			, bimg::getName(format)
-			, mips      ? "true" : "false"
-			, normalMap ? "true" : "false"
-			, iqa       ? "true" : "false"
-			, pma       ? "true" : "false"
-			, sdf       ? "true" : "false"
-			, radiance  ? "true" : "false"
-			, equirect  ? "true" : "false"
-			, strip     ? "true" : "false"
-			, linear    ? "true" : "false"
-			);
-	}
-
 	uint32_t maxSize = UINT32_MAX;
 	uint32_t mipSkip = 0;
 	float edge       = 0.0f;

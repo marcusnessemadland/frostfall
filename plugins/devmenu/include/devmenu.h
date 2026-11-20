@@ -138,9 +138,6 @@ namespace frost
 		bool visible = false;
 
 		Entity root;     //!< Populated during Startup. Applications may also parent items here.
-		Entity engine;   //!< Populated during Startup. Applications may also parent items here.
-		Entity device;   //!< Populated during Startup. Applications may also parent items here.
-		Entity graphics; //!< Populated during Startup. Applications may also parent items here.
 		Entity custom;   //!< Applications may also parent items here.
 	};
 

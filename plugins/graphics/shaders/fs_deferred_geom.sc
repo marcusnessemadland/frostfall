@@ -1,4 +1,4 @@
-$input v_wpos, v_view, v_normal, v_tangent, v_bitangent, v_texcoord0
+$input v_normal, v_tangent, v_bitangent, v_texcoord0
 
 /*
  * Copyright 2026-2027 Marcus Nesse Madland. All rights reserved.

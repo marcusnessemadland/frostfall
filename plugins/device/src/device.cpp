@@ -13,7 +13,6 @@
 
 namespace frost
 {
-	// TODO: Can this just do a static_cast instead? We trust frost::Key is a valid copy of SDL_Scancode no?
 	static Key::Enum toKey(SDL_Scancode _scancode)
 	{
 		switch (_scancode)
@@ -269,7 +268,6 @@ namespace frost
 		}
 	}
 
-	// TODO: Can this just do a static_cast instead? We trust frost::MouseButton is a valid copy of SDL_BUTTON no?
 	static uint32_t toMouseButton(uint8_t _button)
 	{
 		switch (_button)

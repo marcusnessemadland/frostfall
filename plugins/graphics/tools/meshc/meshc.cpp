@@ -29,30 +29,6 @@ namespace stl = tinystl;
 #define FROST_MESHC_VERSION_MAJOR 1
 #define FROST_MESHC_VERSION_MINOR 1
 
-#if 0
-#	define BX_TRACE(_format, ...) \
-		do { \
-			bx::printf(BX_FILE_LINE_LITERAL "BGFX " _format "\n", ##__VA_ARGS__); \
-		} while(0)
-
-#	define BX_WARN(_condition, _format, ...) \
-		do { \
-			if (!(_condition) ) \
-			{ \
-				BX_TRACE(BX_FILE_LINE_LITERAL "WARN " _format, ##__VA_ARGS__); \
-			} \
-		} while(0)
-
-#	define BX_ASSERT(_condition, _format, ...) \
-		do { \
-			if (!(_condition) ) \
-			{ \
-				BX_TRACE(BX_FILE_LINE_LITERAL "CHECK " _format, ##__VA_ARGS__); \
-				bx::debugBreak(); \
-			} \
-		} while(0)
-#endif // 0
-
 #include <bx/bx.h>
 #include <bx/bounds.h>
 #include <bx/commandline.h>
@@ -300,10 +276,21 @@ static void generateTangents(Mesh& _mesh)
 	callbacks.m_setTSpaceBasic = [](const SMikkTSpaceContext* _context, const float _tangent[], float _sign, int _face, int _vertex)
 	{
 		TriIndices& triangle = ((Mesh*)_context->m_pUserData)->m_triangles[_face];
-		if (!triangle.m_hasTangents)
+		const bx::Vec3 tangent = bx::load<bx::Vec3>(triangle.m_tangents[_vertex]);
+		// Some exporters provide zero tangents. Regenerate those corners as well.
+		if (!triangle.m_hasTangents || !(bx::dot(tangent, tangent) > 0.5f))
 		{
 			bx::memCopy(triangle.m_tangents[_vertex], _tangent, 3 * sizeof(float));
 			triangle.m_tangents[_vertex][3] = _sign;
+			const bx::Vec3 generated = bx::load<bx::Vec3>(_tangent);
+			if (!(bx::dot(generated, generated) > 0.5f))
+			{
+				// A collapsed UV triangle has no tangent direction. Use an orthogonal frame.
+				float normal[3]; _context->m_pInterface->m_getNormal(_context, normal, _face, _vertex);
+				bx::Vec3 tangent(bx::InitNone), bitangent(bx::InitNone);
+				bx::calcTangentFrame(tangent, bitangent, bx::load<bx::Vec3>(normal));
+				bx::store(triangle.m_tangents[_vertex], tangent);
+			}
 		}
 	};
 	SMikkTSpaceContext context = { &callbacks, &_mesh };

@@ -50,10 +50,8 @@ namespace frost
 			}
 		}
 
-		static void update(ResT<DisplayResource> _display, ResT<GraphicsDesc> _graphics)
+		static void update(ResT<DisplayResource> _display)
 		{
-			bgfx::setDebug(_graphics->gpuProfiling ? BGFX_DEBUG_PROFILER : BGFX_DEBUG_NONE);
-
 			if (0 == _display->width || 0 == _display->height)
 			{
 				// Minimized or disconnected monitor
@@ -88,6 +86,7 @@ namespace frost
 
 // Renderer
 #include "vs_deferred_geom.bin.h"
+#include "vs_deferred_geom_instanced.bin.h"
 #include "fs_deferred_geom.bin.h"
 #include "vs_deferred_light.bin.h"
 #include "fs_deferred_light.bin.h"
@@ -102,23 +101,42 @@ namespace frost
 #include "fs_shadow.bin.h"
 #include "fs_shadow_masked.bin.h"
 
+#include "vs_capture.bin.h"
+#include "vs_capture_instanced.bin.h"
+#include "fs_capture.bin.h"
+#include "vs_local_shadow.bin.h"
+#include "vs_local_shadow_instanced.bin.h"
+#include "fs_local_shadow.bin.h"
+#include "fs_local_shadow_masked.bin.h"
+#include "cs_local_shadow_copy.bin.h"
+#include "fs_local_light.bin.h"
+#include "cs_environment_filter.bin.h"
+#include "fs_environment_sky.bin.h"
+#include "fs_environment_light.bin.h"
+
 #include <bgfx/embedded_shader.h>
 
 #include <charset.h> // bgfx's built-in bitmap font, retained with its upstream license.
 
 namespace frost
 {
-	constexpr bgfx::ViewId kRenderPassGeometry = 0;
+	constexpr uint8_t kMaxLocalShadows = 30;
+	constexpr uint8_t kLocalShadowColumns = 15;
+	constexpr uint8_t kLocalShadowRows = (kMaxLocalShadows * 6 + kLocalShadowColumns - 1) / kLocalShadowColumns;
+	constexpr bgfx::ViewId kRenderPassEnvironment = 0;
+	constexpr bgfx::ViewId kRenderPassGeometry = kRenderPassEnvironment + 1;
 	constexpr bgfx::ViewId kRenderPassShadow = kRenderPassGeometry + 1;
-	constexpr bgfx::ViewId kRenderPassLight = kRenderPassShadow + 1;
-	constexpr bgfx::ViewId kRenderPassSky = kRenderPassLight + 1;
+	constexpr bgfx::ViewId kRenderPassLocalShadow = kRenderPassShadow + 1;
+	constexpr bgfx::ViewId kRenderPassLight = kRenderPassLocalShadow + 1;
+	constexpr bgfx::ViewId kRenderPassLocalLight = kRenderPassLight + 1;
+	constexpr bgfx::ViewId kRenderPassSky = kRenderPassLocalLight + 1;
 	constexpr bgfx::ViewId kRenderPassToneMap = kRenderPassSky + 1;
-	constexpr bgfx::ViewId kRenderPassDebug = kRenderPassToneMap + 1;
-	constexpr bgfx::ViewId kRenderPassUi = kRenderPassDebug + 1;
+	constexpr bgfx::ViewId kRenderPassUi = kRenderPassToneMap + 1;
 
 	static const bgfx::EmbeddedShader s_embeddedShaders[] =
 	{
 		BGFX_EMBEDDED_SHADER(vs_deferred_geom),
+		BGFX_EMBEDDED_SHADER(vs_deferred_geom_instanced),
 		BGFX_EMBEDDED_SHADER(fs_deferred_geom),
 		BGFX_EMBEDDED_SHADER(vs_deferred_light),
 		BGFX_EMBEDDED_SHADER(fs_deferred_light),
@@ -130,6 +148,18 @@ namespace frost
 		BGFX_EMBEDDED_SHADER(vs_shadow_instanced),
 		BGFX_EMBEDDED_SHADER(fs_shadow),
 		BGFX_EMBEDDED_SHADER(fs_shadow_masked),
+		BGFX_EMBEDDED_SHADER(vs_capture),
+		BGFX_EMBEDDED_SHADER(vs_capture_instanced),
+		BGFX_EMBEDDED_SHADER(fs_capture),
+		BGFX_EMBEDDED_SHADER(vs_local_shadow),
+		BGFX_EMBEDDED_SHADER(vs_local_shadow_instanced),
+		BGFX_EMBEDDED_SHADER(fs_local_shadow),
+		BGFX_EMBEDDED_SHADER(fs_local_shadow_masked),
+		BGFX_EMBEDDED_SHADER(cs_local_shadow_copy),
+		BGFX_EMBEDDED_SHADER(fs_local_light),
+		BGFX_EMBEDDED_SHADER(cs_environment_filter),
+		BGFX_EMBEDDED_SHADER(fs_environment_sky),
+		BGFX_EMBEDDED_SHADER(fs_environment_light),
 		BGFX_EMBEDDED_SHADER_END()
 	};
 
@@ -138,6 +168,24 @@ namespace frost
 // Geometry pass
 namespace frost
 {
+	static bgfx::ProgramHandle createProgram(const char* _vertex, const char* _fragment)
+	{
+		const auto type = bgfx::getRendererType();
+		const auto program = bgfx::createProgram(bgfx::createEmbeddedShader(s_embeddedShaders, type, _vertex),
+			bgfx::createEmbeddedShader(s_embeddedShaders, type, _fragment), true);
+		FROST_ASSERT(bgfx::isValid(program), "Failed to create %s / %s.", _vertex, _fragment);
+		return program;
+	}
+
+	static void cubeView(float* _view, const Vec3& _position, uint8_t _face)
+	{
+		static const Vec3 directions[] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+		static const Vec3 ups[] = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
+		mtxLookAt(_view, _position, add(_position, directions[_face]), ups[_face]);
+	}
+
+	static const char* s_cubeFaces[] = { "+X", "-X", "+Y", "-Y", "+Z", "-Z" };
+
 	struct RenderFrame
 	{
 		uint16_t width = 0;
@@ -150,6 +198,7 @@ namespace frost
 		float exposure = 1.0f;
 		float cameraPosition[4] = {};
 		float cameraDirection[4] = {};
+		Plane frustum[6] = { InitNone, InitNone, InitNone, InitNone, InitNone, InitNone };
 	};
 
 	struct RenderFrameSystem
@@ -172,6 +221,7 @@ namespace frost
 				float viewProjection[16];
 				mtxMul(viewProjection, _frame->view, _frame->projection);
 				mtxInverse(_frame->inverseViewProjection, viewProjection);
+				buildFrustumPlanes(_frame->frustum, viewProjection, bgfx::getCaps()->homogeneousDepth);
 				_cameras.get(_activeCamera->entity, [&](const CameraComponent& _camera)
 				{
 					store(_frame->cameraPosition, _camera.position);
@@ -185,21 +235,360 @@ namespace frost
 		}
 	};
 
-	struct GBufferResource
+	static Aabb transformBounds(const Aabb& _bounds, const float* _matrix)
 	{
-		bgfx::ProgramHandle program = BGFX_INVALID_HANDLE;
-		bgfx::FrameBufferHandle frameBuffer = BGFX_INVALID_HANDLE;
-		// Base color, normal/coverage, depth, metallic/roughness/AO, HDR emissive.
-		bgfx::TextureHandle textures[5] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE,
-			BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+		const Vec3 center = mul(getCenter(_bounds), _matrix);
+		const Vec3 extents = getExtents(_bounds);
+		const Vec3 x = { _matrix[0], _matrix[1], _matrix[2] };
+		const Vec3 y = { _matrix[4], _matrix[5], _matrix[6] };
+		const Vec3 z = { _matrix[8], _matrix[9], _matrix[10] };
+		const Vec3 radius = add(add(mul(abs(x), extents.x), mul(abs(y), extents.y)), mul(abs(z), extents.z));
+		return { sub(center, radius), add(center, radius) };
+	}
+
+	static bool visibleBounds(const Aabb& _bounds, const Plane* _planes)
+	{
+		const Vec3 center = getCenter(_bounds);
+		const Vec3 extents = getExtents(_bounds);
+		for (uint8_t ii = 0; ii < 6; ++ii)
+		{
+			const Plane& plane = _planes[ii];
+			if (dot(plane.normal, center) + plane.dist + dot(abs(plane.normal), extents) < 0.0f)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	struct MeshRenderItem
+	{
+		const MeshRef* mesh;
+		MeshComponent instance;
+		float model[16];
+		Aabb bounds;
+		float nearDepth;
+		float farDepth;
+		uint16_t lod;
+		bool visible;
+	};
+
+	struct MeshLodState
+	{
+		uint32_t generation;
+		uint16_t mesh;
+		uint16_t lod;
+	};
+
+	struct MeshRenderResource
+	{
+		MeshRenderResource() = default;
+		MeshRenderResource(MeshRenderResource&& _other) : count(_other.count)
+		{
+			items = frost::move(_other.items);
+			lods = frost::move(_other.lods);
+		}
+		DynamicStorageT<MeshRenderItem> items;
+		DynamicStorageT<MeshLodState> lods;
+		uint32_t count = 0;
+	};
+
+	struct MeshRenderSystem
+	{
+		static void startup(World& _world, ResMutT<MeshRenderResource> _render)
+		{
+			_render->items.setAllocator(_world.getAllocator());
+			_render->lods.setAllocator(_world.getAllocator());
+		}
+
+		static void update(World& _world, ResT<RenderFrame> _frame, ResT<GraphicsSettings> _settings,
+			QueryT<Entity, const MeshComponent&, OptionalT<const TransformComponent>> _meshes,
+			ResMutT<MeshRenderResource> _render, ResMutT<GraphicsStatsResource> _stats)
+		{
+			_render->count = 0;
+			*_stats = GraphicsStatsResource{};
+			for (MeshGeometry* geometry : s_meshContext->geometries)
+			{
+				for (; NULL != geometry; geometry = geometry->next)
+				{
+					++_stats->sharedGeometries;
+				}
+			}
+			_meshes.each([&](Entity _entity, const MeshComponent& _instance, const TransformComponent* _transform)
+			{
+				const MeshRef* mesh = getMeshRef(_instance.handle);
+				FROST_ASSERT(NULL != mesh, "MeshComponent must reference a live mesh.");
+				if (_render->count == _render->items.getCapacity())
+				{
+					_render->items.setCapacity(max(128u, _render->count * 2), _render->count);
+				}
+				MeshRenderItem& item = *_render->items.getPtr(_render->count);
+				if (!getWorldTransform(item.model, _world, _entity, _transform))
+				{
+					return;
+				}
+				item.mesh = mesh;
+				item.instance = _instance;
+				item.bounds = { { kFloatLargest, kFloatLargest, kFloatLargest }, { -kFloatLargest, -kFloatLargest, -kFloatLargest } };
+				for (uint32_t ii = 0; ii < mesh->lods[0].numGroups; ++ii)
+				{
+					const Aabb bounds = transformBounds(mesh->lods[0].groups[ii].bounds.aabb, item.model);
+					item.bounds.min = min(item.bounds.min, bounds.min);
+					item.bounds.max = max(item.bounds.max, bounds.max);
+				}
+				item.visible = _frame->active && visibleBounds(item.bounds, _frame->frustum);
+				const Aabb viewBounds = transformBounds(item.bounds, _frame->view);
+				item.nearDepth = viewBounds.min.z;
+				item.farDepth = viewBounds.max.z;
+				if (_entity.idx >= _render->lods.getCapacity())
+				{
+					const uint32_t previous = _render->lods.getCapacity();
+					_render->lods.setCapacity(max(_entity.idx + 1, max(128u, previous * 2)), previous);
+					memSet(_render->lods.getPtr(previous), 0xff, sizeof(MeshLodState) * (_render->lods.getCapacity() - previous));
+				}
+				MeshLodState& state = *_render->lods.getPtr(_entity.idx);
+				if (state.generation != _entity.generation || state.mesh != _instance.handle.idx)
+				{
+					state = { _entity.generation, _instance.handle.idx, 0 };
+				}
+				state.lod = min(state.lod, uint16_t(mesh->numLods - 1));
+				if (!_frame->active || !_settings->lods)
+				{
+					state.lod = 0;
+				}
+				else
+				{
+					float pixels = length(getExtents(item.bounds)) * abs(_frame->projection[5]) * float(_frame->height);
+					if (_frame->cameraPosition[3] < 0.5f)
+					{
+						pixels /= max(0.001f, item.nearDepth);
+					}
+					const float threshold = max(1.0f, _settings->lodPixels);
+					// A dead band around each threshold prevents toggling as the camera moves.
+					while (state.lod + 1 < mesh->numLods && pixels < threshold * exp2(-float(state.lod)) * 0.85f)
+					{
+						++state.lod;
+					}
+					while (state.lod > 0 && pixels > threshold * exp2(1.0f - float(state.lod)) * 1.15f)
+					{
+						--state.lod;
+					}
+				}
+				item.lod = state.lod;
+				++_render->count;
+				++_stats->meshes;
+				if (item.visible)
+				{
+					++_stats->visibleMeshes;
+				}
+			});
+		}
+	};
+
+	struct MeshDraw
+	{
+		const MeshGroup* group;
+		const MaterialCreate* material;
+		uint64_t state;
+		float matrix[16];
+		uint8_t pass;
+		bool depthOnly;
+	};
+
+	struct MeshDrawResource
+	{
+		MeshDrawResource() = default;
+		MeshDrawResource(MeshDrawResource&& _other) : count(_other.count)
+		{
+			draws = frost::move(_other.draws);
+		}
+		DynamicStorageT<MeshDraw> draws;
+		uint32_t count = 0;
+	};
+
+	struct MeshPass
+	{
+		enum Flags : uint8_t
+		{
+			DepthOnly = 0x1,
+			IndependentView = 0x2, //!< Use this pass's frustum and full mesh detail, independent of the camera.
+		};
+		bgfx::ViewId view;
+		bgfx::ProgramHandle programs[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+		bgfx::ProgramHandle instancedPrograms[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+		bgfx::UniformHandle transform = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle tile = BGFX_INVALID_HANDLE;
+		const float* cullView = NULL;
+		const float* viewProjection = NULL;
+		const Plane* frustum = NULL;
+		const Aabb* bounds = NULL;
+		uint64_t state = 0;
+		uint16_t resolution = 0;
+		uint8_t flags = 0;
+		uint8_t cascade = 0;
+		bool active = true;
+		bgfx::UniformHandle parameters = BGFX_INVALID_HANDLE;
+		float values[12] = {};
+		uint8_t numParameters = 2;
+		bgfx::UniformHandle lights = BGFX_INVALID_HANDLE;
+		float lightValues[32] = {};
+		Vec3 origin = { 0, 0, 0 };
+		float minimumDistance = 0.0f;
+		bgfx::UniformHandle camera = BGFX_INVALID_HANDLE;
+		float cameraMatrix[16] = {};
+		uint16_t scissor[4] = {};
+	};
+
+	static void gatherMeshes(const MeshRenderResource& _render, MeshDrawResource& _draws,
+		const MeshPass* _passes, uint8_t _numPasses, const GraphicsSettings& _settings, MeshPassStats& _stats)
+	{
+		FROST_ASSERT(_numPasses > 0 && _numPasses <= 6, "Mesh submission supports up to six views.");
+		_draws.count = 0;
+		const bool depthOnly = 0 != (_passes[0].flags & MeshPass::DepthOnly);
+		for (uint32_t ii = 0; ii < _render.count; ++ii)
+		{
+			const MeshRenderItem& item = *_render.items.getPtr(ii);
+			if (depthOnly && !item.instance.castShadows)
+			{
+				continue;
+			}
+			uint16_t lodIndex = item.lod;
+			if (0 != (_passes[0].flags & MeshPass::IndependentView))
+			{
+				lodIndex = 0;
+			}
+			if (depthOnly && _settings.lods)
+			{
+				lodIndex = item.mesh->numLods - 1;
+			}
+			const MeshLod& lod = item.mesh->lods[lodIndex];
+			if (!depthOnly && 0 == (_passes[0].flags & MeshPass::IndependentView)
+				&& _settings.frustumCulling && !item.visible)
+			{
+				_stats.culled += lod.numGroups;
+				continue;
+			}
+			float cullMatrix[16];
+			memCopy(cullMatrix, item.model, sizeof(cullMatrix));
+			if (NULL != _passes[0].cullView)
+			{
+				mtxMul(cullMatrix, item.model, _passes[0].cullView);
+			}
+			float matrices[6][16];
+			bool ready[6] = {};
+			for (uint32_t jj = 0; jj < lod.numGroups; ++jj)
+			{
+				const MeshGroup& group = lod.groups[jj];
+				const Aabb bounds = transformBounds(group.bounds.aabb, cullMatrix);
+				const MaterialCreate& material = getMeshMaterial(item.instance, *item.mesh, group.materialSlot);
+				for (uint8_t kk = 0; kk < _numPasses; ++kk)
+				{
+					const MeshPass& pass = _passes[kk];
+					const Vec3 farthest = max(abs(sub(bounds.min, pass.origin)), abs(sub(bounds.max, pass.origin)));
+					if (pass.minimumDistance > 0.0f && dot(farthest, farthest) < square(pass.minimumDistance))
+					{
+						++_stats.culled;
+						continue;
+					}
+					if (!pass.active || (_settings.frustumCulling
+						&& ((NULL != pass.frustum && !visibleBounds(bounds, pass.frustum))
+							|| (NULL != pass.bounds && !overlap(bounds, *pass.bounds)))))
+					{
+						++_stats.culled;
+						continue;
+					}
+					if (!ready[kk])
+					{
+						memCopy(matrices[kk], item.model, sizeof(item.model));
+						if (NULL != pass.viewProjection)
+						{
+							mtxMul(matrices[kk], item.model, pass.viewProjection);
+						}
+						ready[kk] = true;
+					}
+					if (_draws.count == _draws.draws.getCapacity())
+					{
+						_draws.draws.setCapacity(max(128u, _draws.count * 2), _draws.count);
+					}
+					MeshDraw& draw = *_draws.draws.getPtr(_draws.count++);
+					draw.group = &group;
+					draw.material = &material;
+					if (depthOnly && !isMaterialMasked(material))
+					{
+						draw.material = NULL;
+					}
+					draw.state = meshState(material, item.model) | pass.state;
+					draw.pass = kk;
+					draw.depthOnly = depthOnly;
+					memCopy(draw.matrix, matrices[kk], sizeof(draw.matrix));
+				}
+			}
+		}
+	}
+
+	struct MaterialUniforms
+	{
 		bgfx::UniformHandle samplers[MaterialTexture::Count];
 		bgfx::UniformHandle u_materialBaseColor = BGFX_INVALID_HANDLE;
 		bgfx::UniformHandle u_materialParameters = BGFX_INVALID_HANDLE;
 		bgfx::UniformHandle u_materialEmissive = BGFX_INVALID_HANDLE;
 		bgfx::UniformHandle u_materialFlags = BGFX_INVALID_HANDLE;
+	};
+
+	struct GBufferResource
+	{
+		bgfx::ProgramHandle program = BGFX_INVALID_HANDLE;
+		bgfx::ProgramHandle instancedProgram = BGFX_INVALID_HANDLE;
+		bgfx::FrameBufferHandle frameBuffer = BGFX_INVALID_HANDLE;
+		// Base color, normal/coverage, depth, metallic/roughness/AO, HDR emissive.
+		bgfx::TextureHandle textures[5] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE,
+			BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+		MaterialUniforms material;
 		uint32_t width = 0;
 		uint32_t height = 0;
 	};
+
+	static void submitMeshes(MeshDrawResource& _draws, const MaterialUniforms& _materialUniforms,
+		const MeshPass* _passes, const GraphicsSettings& _settings, MeshPassStats& _stats);
+
+	static void bindMaterial(const MaterialCreate& _material, const MaterialUniforms& _uniforms, bool _shadow = false)
+	{
+		const uint8_t count = _shadow ? 1 : MaterialTexture::Count;
+		for (uint8_t ii = 0; ii < count; ++ii)
+		{
+			const TextureRef* texture = getTextureRef(_material.textures[ii]);
+			FROST_ASSERT(!isValid(_material.textures[ii]) || NULL != texture, "Material must reference live textures.");
+			const bgfx::TextureHandle fallback = MaterialTexture::Normal == ii ? s_textureContext->normal : s_textureContext->white;
+			const uint32_t flags = _material.samplers[ii];
+			uint32_t sampler = 0;
+			if (0 != (flags & TextureSampler::ClampU)) { sampler |= BGFX_SAMPLER_U_CLAMP; }
+			if (0 != (flags & TextureSampler::ClampV)) { sampler |= BGFX_SAMPLER_V_CLAMP; }
+			if (0 != (flags & TextureSampler::MirrorU)) { sampler |= BGFX_SAMPLER_U_MIRROR; }
+			if (0 != (flags & TextureSampler::MirrorV)) { sampler |= BGFX_SAMPLER_V_MIRROR; }
+			if (0 != (flags & TextureSampler::Point)) { sampler |= BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_MIP_POINT; }
+			if (0 != (flags & TextureSampler::Anisotropic)) { sampler |= BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC; }
+			bgfx::setTexture(ii, _uniforms.samplers[ii], NULL != texture ? texture->texture : fallback, sampler);
+		}
+		const float parameters[] = { _material.metallic, _material.roughness, _material.normalScale, _material.occlusionStrength };
+		const float emissive[] = { _material.emissive.x * _material.emissiveStrength,
+			_material.emissive.y * _material.emissiveStrength, _material.emissive.z * _material.emissiveStrength, _material.alphaCutoff };
+		float flags[4] = {};
+		if (isMaterialMasked(_material))
+		{
+			flags[0] = 1.0f;
+		}
+		if (0 != (_material.flags & MaterialFlags::DoubleSided))
+		{
+			flags[1] = 1.0f;
+		}
+		bgfx::setUniform(_uniforms.u_materialBaseColor, _material.baseColor);
+		bgfx::setUniform(_uniforms.u_materialEmissive, emissive);
+		if (!_shadow)
+		{
+			bgfx::setUniform(_uniforms.u_materialParameters, parameters);
+			bgfx::setUniform(_uniforms.u_materialFlags, flags);
+		}
+	}
 
 	struct GBufferSystem
 	{
@@ -213,16 +602,20 @@ namespace frost
 				bgfx::createEmbeddedShader(s_embeddedShaders, type, "fs_deferred_geom"), true);
 
 			FROST_ASSERT(bgfx::isValid(_gbuffer->program), "Failed to create the geometry program.");
+			_gbuffer->instancedProgram = bgfx::createProgram(
+				bgfx::createEmbeddedShader(s_embeddedShaders, type, "vs_deferred_geom_instanced"),
+				bgfx::createEmbeddedShader(s_embeddedShaders, type, "fs_deferred_geom"), true);
+			FROST_ASSERT(bgfx::isValid(_gbuffer->instancedProgram), "Failed to create the instanced geometry program.");
 
 			const char* samplers[] = { "s_baseColorMap", "s_normalMap", "s_metallicRoughnessMap", "s_occlusionMap", "s_emissiveMap" };
 			for (uint32_t ii = 0; ii < MaterialTexture::Count; ++ii)
 			{
-				_gbuffer->samplers[ii] = bgfx::createUniform(samplers[ii], bgfx::UniformType::Sampler);
+				_gbuffer->material.samplers[ii] = bgfx::createUniform(samplers[ii], bgfx::UniformType::Sampler);
 			}
-			_gbuffer->u_materialBaseColor = bgfx::createUniform("u_materialBaseColor", bgfx::UniformType::Vec4);
-			_gbuffer->u_materialParameters = bgfx::createUniform("u_materialParameters", bgfx::UniformType::Vec4);
-			_gbuffer->u_materialEmissive = bgfx::createUniform("u_materialEmissive", bgfx::UniformType::Vec4);
-			_gbuffer->u_materialFlags = bgfx::createUniform("u_materialFlags", bgfx::UniformType::Vec4);
+			_gbuffer->material.u_materialBaseColor = bgfx::createUniform("u_materialBaseColor", bgfx::UniformType::Vec4);
+			_gbuffer->material.u_materialParameters = bgfx::createUniform("u_materialParameters", bgfx::UniformType::Vec4);
+			_gbuffer->material.u_materialEmissive = bgfx::createUniform("u_materialEmissive", bgfx::UniformType::Vec4);
+			_gbuffer->material.u_materialFlags = bgfx::createUniform("u_materialFlags", bgfx::UniformType::Vec4);
 			bgfx::setPaletteColor(0, UINT32_C(0x00000000));
 			bgfx::setPaletteColor(1, UINT32_C(0xffffffff));
 		}
@@ -279,40 +672,10 @@ namespace frost
 			_gbuffer.height = _height;
 		}
 
-		static void bindMaterial(const MaterialCreate& _material, const GBufferResource& _gbuffer, bool _shadow = false)
-		{
-			const uint8_t count = _shadow ? 1 : MaterialTexture::Count;
-			for (uint8_t ii = 0; ii < count; ++ii)
-			{
-				const TextureRef* texture = getTextureRef(_material.textures[ii]);
-				FROST_ASSERT(!isValid(_material.textures[ii]) || NULL != texture, "Material must reference live textures.");
-				const bgfx::TextureHandle fallback = MaterialTexture::Normal == ii ? s_textureContext->normal : s_textureContext->white;
-				const uint32_t flags = _material.samplers[ii];
-				uint32_t sampler = 0;
-				if (0 != (flags & TextureSampler::ClampU)) { sampler |= BGFX_SAMPLER_U_CLAMP; }
-				if (0 != (flags & TextureSampler::ClampV)) { sampler |= BGFX_SAMPLER_V_CLAMP; }
-				if (0 != (flags & TextureSampler::MirrorU)) { sampler |= BGFX_SAMPLER_U_MIRROR; }
-				if (0 != (flags & TextureSampler::MirrorV)) { sampler |= BGFX_SAMPLER_V_MIRROR; }
-				if (0 != (flags & TextureSampler::Point)) { sampler |= BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_MIP_POINT; }
-				if (0 != (flags & TextureSampler::Anisotropic)) { sampler |= BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC; }
-				bgfx::setTexture(ii, _gbuffer.samplers[ii], NULL != texture ? texture->texture : fallback, sampler);
-			}
-			const float parameters[] = { _material.metallic, _material.roughness, _material.normalScale, _material.occlusionStrength };
-			const float emissive[] = { _material.emissive.x * _material.emissiveStrength,
-				_material.emissive.y * _material.emissiveStrength, _material.emissive.z * _material.emissiveStrength, _material.alphaCutoff };
-			const float flags[] = { 0 != (_material.flags & MaterialFlags::Masked) ? 1.0f : 0.0f,
-				0 != (_material.flags & MaterialFlags::DoubleSided) ? 1.0f : 0.0f, 0.0f, 0.0f };
-			bgfx::setUniform(_gbuffer.u_materialBaseColor, _material.baseColor);
-			bgfx::setUniform(_gbuffer.u_materialEmissive, emissive);
-			if (!_shadow)
-			{
-				bgfx::setUniform(_gbuffer.u_materialParameters, parameters);
-				bgfx::setUniform(_gbuffer.u_materialFlags, flags);
-			}
-		}
 
-		static void update(ResT<RenderFrame> _frame,
-			QueryT<const MeshComponent&, OptionalT<const TransformComponent>> _meshes, ResMutT<GBufferResource> _gbuffer)
+		static void update(ResT<RenderFrame> _frame, ResT<MeshRenderResource> _render,
+			ResT<GraphicsSettings> _settings, ResMutT<MeshDrawResource> _draws,
+			ResMutT<GraphicsStatsResource> _stats, ResMutT<GBufferResource> _gbuffer)
 		{
 			if (!_frame->active)
 			{
@@ -329,84 +692,209 @@ namespace frost
 			bgfx::setViewTransform(kRenderPassGeometry, _frame->view, _frame->projection);
 			bgfx::touch(kRenderPassGeometry);
 
-			_meshes.each([&](const MeshComponent& _mesh, const TransformComponent* _transform)
-			{
-				const MeshRef* mesh = getMeshRef(_mesh.handle);
-
-				FROST_ASSERT(NULL != mesh, "MeshComponent must reference a live mesh.");
-
-				float mtx[16];
-				if (!getMeshTransform(mtx, _transform)) { return; }
-
-				const MeshLod& lod = mesh->lods[0];
-				for (uint32_t ii = 0; ii < lod.numGroups; ++ii)
-				{
-					const MeshGroup& group = lod.groups[ii];
-					const MaterialCreate& desc = getMeshMaterial(_mesh, *mesh, group.materialSlot);
-					const uint64_t state = meshState(desc, _transform) | BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A
-						| BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS;
-					for (uint16_t jj = 0; jj < group.numPrimitives; ++jj)
-					{
-						const MeshPrimitive& primitive = group.primitives[jj];
-						bgfx::setTransform(mtx);
-						bgfx::setVertexBuffer(0, group.vertexBuffer);
-						bgfx::setIndexBuffer(group.indexBuffer, primitive.startIndex, primitive.numIndices);
-						bindMaterial(desc, *_gbuffer);
-						bgfx::setState(state);
-						bgfx::submit(kRenderPassGeometry, _gbuffer->program);
-					}
-				}
-			});
+			MeshPass pass;
+			pass.view = kRenderPassGeometry;
+			pass.programs[0] = _gbuffer->program;
+			pass.instancedPrograms[0] = _gbuffer->instancedProgram;
+			pass.frustum = _frame->frustum;
+			pass.state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS;
+			gatherMeshes(*_render, *_draws, &pass, 1, *_settings, _stats->geometry);
+			submitMeshes(*_draws, _gbuffer->material, &pass, *_settings, _stats->geometry);
 		}
 
 		static void shutdown(ResMutT<GBufferResource> _gbuffer)
 		{
 			destroyTargets(*_gbuffer);
 			bgfx::destroy(_gbuffer->program);
-			for (bgfx::UniformHandle sampler : _gbuffer->samplers) { bgfx::destroy(sampler); }
-			bgfx::destroy(_gbuffer->u_materialBaseColor);
-			bgfx::destroy(_gbuffer->u_materialParameters);
-			bgfx::destroy(_gbuffer->u_materialEmissive);
-			bgfx::destroy(_gbuffer->u_materialFlags);
+			if (bgfx::isValid(_gbuffer->instancedProgram))
+			{
+				bgfx::destroy(_gbuffer->instancedProgram);
+			}
+			for (bgfx::UniformHandle sampler : _gbuffer->material.samplers) { bgfx::destroy(sampler); }
+			bgfx::destroy(_gbuffer->material.u_materialBaseColor);
+			bgfx::destroy(_gbuffer->material.u_materialParameters);
+			bgfx::destroy(_gbuffer->material.u_materialEmissive);
+			bgfx::destroy(_gbuffer->material.u_materialFlags);
 		}
 	};
+
+} // namespace frost
+
+// Mesh submission
+namespace frost
+{
+	static int32_t compareMeshDraws(const void* _lhs, const void* _rhs)
+	{
+		const MeshDraw& a = *(const MeshDraw*)_lhs;
+		const MeshDraw& b = *(const MeshDraw*)_rhs;
+		if (a.pass != b.pass)
+		{
+			return compareAscending<uint8_t>(&a.pass, &b.pass);
+		}
+		if (a.group != b.group)
+		{
+			const uintptr_t lhs = uintptr_t(a.group);
+			const uintptr_t rhs = uintptr_t(b.group);
+			return compareAscending<uintptr_t>(&lhs, &rhs);
+		}
+		if (a.state != b.state)
+		{
+			return compareAscending<uint64_t>(&a.state, &b.state);
+		}
+		if (a.material == b.material) { return 0; }
+		if (NULL == a.material || NULL == b.material)
+		{
+			if (NULL == a.material) { return -1; }
+			return 1;
+		}
+		const MaterialCreate& x = *a.material;
+		const MaterialCreate& y = *b.material;
+		uint32_t textures = MaterialTexture::Count;
+		if (a.depthOnly)
+		{
+			textures = 1;
+		}
+		for (uint32_t ii = 0; ii < textures; ++ii)
+		{
+			if (x.textures[ii].idx != y.textures[ii].idx)
+			{
+				return compareAscending<uint16_t>(&x.textures[ii].idx, &y.textures[ii].idx);
+			}
+			if (x.samplers[ii] != y.samplers[ii])
+			{
+				return compareAscending<uint32_t>(&x.samplers[ii], &y.samplers[ii]);
+			}
+		}
+		if (x.baseColor[3] != y.baseColor[3])
+		{
+			return compareAscending<float>(&x.baseColor[3], &y.baseColor[3]);
+		}
+		if (x.alphaCutoff != y.alphaCutoff)
+		{
+			return compareAscending<float>(&x.alphaCutoff, &y.alphaCutoff);
+		}
+		if (a.depthOnly)
+		{
+			return 0;
+		}
+		if (x.flags != y.flags)
+		{
+			return compareAscending<uint32_t>(&x.flags, &y.flags);
+		}
+		const float xv[] = { x.baseColor[0], x.baseColor[1], x.baseColor[2], x.emissive.x, x.emissive.y, x.emissive.z,
+			x.emissiveStrength, x.metallic, x.roughness, x.normalScale, x.occlusionStrength };
+		const float yv[] = { y.baseColor[0], y.baseColor[1], y.baseColor[2], y.emissive.x, y.emissive.y, y.emissive.z,
+			y.emissiveStrength, y.metallic, y.roughness, y.normalScale, y.occlusionStrength };
+		for (uint32_t ii = 0; ii < FROST_COUNTOF(xv); ++ii)
+		{
+			if (xv[ii] != yv[ii])
+			{
+				return compareAscending<float>(&xv[ii], &yv[ii]);
+			}
+		}
+		return 0;
+	}
+
+	static void submitMeshes(MeshDrawResource& _draws, const MaterialUniforms& _materialUniforms,
+		const MeshPass* _passes, const GraphicsSettings& _settings, MeshPassStats& _stats)
+	{
+		quickSort(_draws.draws.getPtr(), _draws.count, compareMeshDraws);
+		for (uint32_t begin = 0; begin < _draws.count;)
+		{
+			const MeshDraw& draw = *_draws.draws.getPtr(begin);
+			uint32_t end = begin + 1;
+			while (end < _draws.count && 0 == compareMeshDraws(&draw, _draws.draws.getPtr(end)))
+			{
+				++end;
+			}
+			const MeshPass& pass = _passes[draw.pass];
+			const MeshGroup& group = *draw.group;
+			uint8_t program = 0;
+			if (draw.depthOnly && NULL != draw.material)
+			{
+				program = 1;
+			}
+			while (begin < end)
+			{
+				uint32_t count = 1;
+				bgfx::InstanceDataBuffer instances;
+				if (_settings.instancing && bgfx::isValid(pass.instancedPrograms[program]))
+				{
+					// Instance data shares the transient vertex pool with fullscreen and UI draws.
+					const uint32_t reserve = bgfx::getCaps()->limits.maxTransientVbSize / 256;
+					const uint32_t available = bgfx::getAvailInstanceDataBuffer(end - begin + reserve, 64);
+					if (available > reserve)
+					{
+						count = min(end - begin, available - reserve);
+					}
+				}
+				if (count > 1)
+				{
+					bgfx::allocInstanceDataBuffer(&instances, count, 64);
+					for (uint32_t ii = 0; ii < count; ++ii)
+					{
+						memCopy(instances.data + ii * 64, _draws.draws.getPtr(begin + ii)->matrix, 64);
+					}
+				}
+				for (uint16_t ii = 0; ii < group.numPrimitives; ++ii)
+				{
+					const MeshPrimitive& primitive = group.primitives[ii];
+					bgfx::setVertexBuffer(0, group.vertexBuffer);
+					bgfx::setIndexBuffer(group.indexBuffer, primitive.startIndex, primitive.numIndices);
+					if (bgfx::isValid(pass.tile))
+					{
+						const float tile[] = { 0.25f, -0.75f + 0.5f * float(pass.cascade), 0.0f, 0.0f };
+						bgfx::setScissor(uint16_t(pass.resolution * pass.cascade), 0, pass.resolution, pass.resolution);
+						bgfx::setUniform(pass.tile, tile);
+					}
+					if (NULL != draw.material)
+					{
+						bindMaterial(*draw.material, _materialUniforms, draw.depthOnly);
+					}
+					bgfx::ProgramHandle shader = pass.programs[program];
+					if (count > 1)
+					{
+						bgfx::setInstanceDataBuffer(&instances);
+						shader = pass.instancedPrograms[program];
+					}
+					else if (bgfx::isValid(pass.transform))
+					{
+						bgfx::setUniform(pass.transform, _draws.draws.getPtr(begin)->matrix);
+					}
+					else
+					{
+						bgfx::setTransform(_draws.draws.getPtr(begin)->matrix);
+					}
+					if (bgfx::isValid(pass.parameters))
+					{
+						bgfx::setUniform(pass.parameters, pass.values, pass.numParameters);
+					}
+					if (bgfx::isValid(pass.lights))
+					{
+						bgfx::setUniform(pass.lights, pass.lightValues, 8);
+					}
+					if (bgfx::isValid(pass.camera)) { bgfx::setUniform(pass.camera, pass.cameraMatrix); }
+					if (pass.scissor[2] > 0) { bgfx::setScissor(pass.scissor[0], pass.scissor[1], pass.scissor[2], pass.scissor[3]); }
+					bgfx::setState(draw.state);
+					bgfx::submit(pass.view, shader);
+					++_stats.draws;
+					_stats.instances += count;
+					_stats.triangles += uint64_t(count) * primitive.numIndices / 3;
+					if (NULL != draw.material && isMaterialMasked(*draw.material))
+					{
+						++_stats.masked;
+					}
+				}
+				begin += count;
+			}
+		}
+	}
 
 } // namespace frost
 
 // Sun shadow resources
 namespace frost
 {
-	struct ShadowDraw
-	{
-		const MeshGroup* group;
-		const MaterialCreate* material; // Only masked casters need material bindings.
-		uint64_t state;
-		uint8_t cascade;
-		float modelProjection[16];
-	};
-
-	struct ShadowDrawResource
-	{
-		ShadowDrawResource() = default;
-		ShadowDrawResource(ShadowDrawResource&& _other) : count(_other.count)
-		{
-			draws = frost::move(_other.draws);
-		}
-		DynamicStorageT<ShadowDraw> draws;
-		uint32_t count = 0;
-	};
-
-	static int32_t compareShadowDraws(const void* _lhs, const void* _rhs)
-	{
-		const ShadowDraw& a = *(const ShadowDraw*)_lhs;
-		const ShadowDraw& b = *(const ShadowDraw*)_rhs;
-		if (a.cascade != b.cascade) { return a.cascade < b.cascade ? -1 : 1; }
-		if (a.group != b.group) { return uintptr_t(a.group) < uintptr_t(b.group) ? -1 : 1; }
-		if (a.state != b.state) { return a.state < b.state ? -1 : 1; }
-		if (a.material != b.material) { return uintptr_t(a.material) < uintptr_t(b.material) ? -1 : 1; }
-		return 0;
-	}
-
 	struct SunShadowTargets
 	{
 		bgfx::ProgramHandle programs[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
@@ -429,6 +917,9 @@ namespace frost
 		float direction[4] = {};
 		uint16_t resolution = 0;
 		bool active = false;
+		Entity light;
+		float sceneView[16] = {};
+		bool rendered = false;
 	};
 
 	static void bindShadows(const SunShadowTargets& _shadows, const SunShadowResource& _settings,
@@ -445,7 +936,9 @@ namespace frost
 		bgfx::setUniform(_shadows.u_shadowDirection, _shadows.direction);
 		bgfx::setUniform(_shadows.u_shadowParameters, parameters);
 		bgfx::setUniform(_shadows.u_shadowInfo, info);
-		bgfx::setUniform(_shadows.u_sceneView, _frame.view);
+		const float* sceneView = _frame.view;
+		if (_shadows.rendered) { sceneView = _shadows.sceneView; }
+		bgfx::setUniform(_shadows.u_sceneView, sceneView);
 	}
 
 	struct SunShadowSystem
@@ -457,6 +950,7 @@ namespace frost
 			_shadows.target = BGFX_INVALID_HANDLE;
 			_shadows.atlas = BGFX_INVALID_HANDLE;
 			_shadows.resolution = 0;
+			_shadows.rendered = false;
 		}
 
 		static void resize(SunShadowTargets& _shadows, uint16_t _resolution)
@@ -471,11 +965,11 @@ namespace frost
 				false, 1, bgfx::TextureFormat::D16, flags);
 			_shadows.target = bgfx::createFrameBuffer(1, &_shadows.atlas, false);
 			FROST_ASSERT(bgfx::isValid(_shadows.target), "Failed to create the shadow atlas.");
-			bgfx::setName(_shadows.atlas, "Sun shadow atlas");
+			bgfx::setName(_shadows.atlas, "Global Shadow");
 			_shadows.resolution = _resolution;
 		}
 
-		static void startup(World& _world, ResMutT<SunShadowTargets> _shadows, ResMutT<ShadowDrawResource> _draws)
+		static void startup(World& _world, ResMutT<SunShadowTargets> _shadows, ResMutT<MeshDrawResource> _draws)
 		{
 			const bgfx::RendererType::Enum type = bgfx::getRendererType();
 			_draws->draws.setAllocator(_world.getAllocator());
@@ -494,7 +988,7 @@ namespace frost
 			_shadows->sampler = bgfx::createUniform("s_shadowAtlas", bgfx::UniformType::Sampler);
 			_shadows->u_shadowViewProjection = bgfx::createUniform("u_shadowViewProjection", bgfx::UniformType::Mat4);
 			_shadows->u_shadowTile = bgfx::createUniform("u_shadowTile", bgfx::UniformType::Vec4);
-			bgfx::setViewName(kRenderPassShadow, "Sun shadow atlas");
+			bgfx::setViewName(kRenderPassShadow, "Global Shadow");
 			_shadows->u_shadowMatrix = bgfx::createUniform("u_shadowMatrix", bgfx::UniformType::Mat4, 4);
 			_shadows->u_shadowSplits = bgfx::createUniform("u_shadowSplits", bgfx::UniformType::Vec4);
 			_shadows->u_shadowTexels = bgfx::createUniform("u_shadowTexels", bgfx::UniformType::Vec4);
@@ -505,69 +999,40 @@ namespace frost
 			resize(*_shadows, 1); // Valid bindings even without an active shadow light.
 		}
 
-		static void submit(const ShadowDrawResource& _draws, const SunShadowResource& _settings,
-			const GBufferResource& _gbuffer, const SunShadowTargets& _shadows, GraphicsStatsResource& _stats)
-		{
-			const bool instancing = _settings.instancing;
-			for (uint32_t begin = 0; begin < _draws.count;)
-			{
-				const ShadowDraw& draw = *_draws.draws.getPtr(begin);
-				uint32_t end = begin + 1;
-				while (end < _draws.count && 0 == compareShadowDraws(&draw, _draws.draws.getPtr(end))) { ++end; }
-				const MeshGroup& group = *draw.group;
-				const float tile[] = { 0.25f, -0.75f + 0.5f * float(draw.cascade), 0.0f, 0.0f };
-				const bool masked = NULL != draw.material;
-				while (begin < end)
-				{
-					const uint32_t available = instancing
-						? bgfx::getAvailInstanceDataBuffer(end - begin, 64) : 0;
-					const uint32_t count = available > 1 ? available : 1;
-					bgfx::InstanceDataBuffer instances;
-					if (count > 1)
-					{
-						bgfx::allocInstanceDataBuffer(&instances, count, 64);
-						for (uint32_t ii = 0; ii < count; ++ii)
-						{
-							memCopy(instances.data + ii * 64, _draws.draws.getPtr(begin + ii)->modelProjection, 64);
-						}
-					}
-					for (uint16_t ii = 0; ii < group.numPrimitives; ++ii)
-					{
-						const MeshPrimitive& primitive = group.primitives[ii];
-						bgfx::setVertexBuffer(0, group.vertexBuffer);
-						bgfx::setIndexBuffer(group.indexBuffer, primitive.startIndex, primitive.numIndices);
-						bgfx::setScissor(uint16_t(_shadows.resolution * draw.cascade), 0,
-							_shadows.resolution, _shadows.resolution);
-						bgfx::setUniform(_shadows.u_shadowTile, tile);
-						if (masked) { GBufferSystem::bindMaterial(*draw.material, _gbuffer, true); }
-						if (count > 1) { bgfx::setInstanceDataBuffer(&instances); }
-						else { bgfx::setUniform(_shadows.u_shadowViewProjection, _draws.draws.getPtr(begin)->modelProjection); }
-						bgfx::setState(draw.state);
-						bgfx::submit(kRenderPassShadow, count > 1
-							? _shadows.instancedPrograms[masked ? 1 : 0] : _shadows.programs[masked ? 1 : 0]);
-						++_stats.shadowDraws;
-					}
-					begin += count;
-				}
-			}
-		}
 
-		static void update(ResT<RenderFrame> _frame, ResT<SunShadowResource> _settings,
+		static void update(ResT<RenderFrame> _frame, ResMutT<SunShadowResource> _settings,
 			ResT<ActiveCameraResource> _activeCamera, QueryT<const CameraComponent&> _cameras,
-			QueryT<const DirectionalLightComponent&> _lights,
-			QueryT<const MeshComponent&, OptionalT<const TransformComponent>> _meshes,
+			QueryT<Entity, const DirectionalLightComponent&> _lights, ResT<MeshRenderResource> _render,
+			ResT<GraphicsSettings> _graphics, ResMutT<GraphicsStatsResource> _stats,
 			ResT<GBufferResource> _gbuffer, ResMutT<SunShadowTargets> _shadows,
-			ResMutT<GraphicsStatsResource> _stats, ResMutT<ShadowDrawResource> _draws)
+			ResMutT<MeshDrawResource> _draws)
 		{
 			_draws->count = 0;
-			_stats->shadowDraws = 0;
-			_stats->shadowTriangles = 0;
 			_shadows->active = false;
-			memSet(_stats->shadowCasters, 0, sizeof(_stats->shadowCasters));
-			if (!_frame->active || _settings->distance <= 0.0f) { return; }
+			if (!_frame->active || _settings->distance <= 0.0f || _settings->distanceScale <= 0.0f) { return; }
 			DirectionalLightComponent light;
-			if (!_lights.get(_settings->light, [&](const DirectionalLightComponent& _light) { light = _light; })
-				|| light.intensity <= 0.0f || max(light.color.x, max(light.color.y, light.color.z)) <= 0.0f) { return; }
+			bool found = _lights.get(_settings->light, [&](Entity, const DirectionalLightComponent& _light) { light = _light; });
+			if (!found)
+			{
+				_lights.each([&](Entity _entity, const DirectionalLightComponent& _light)
+				{
+					if (!found && _light.intensity > 0.0f)
+					{
+						_settings->light = _entity;
+						light = _light;
+						found = true;
+					}
+				});
+			}
+			if (!found || light.intensity <= 0.0f || max(light.color.x, max(light.color.y, light.color.z)) <= 0.0f) { return; }
+			const uint16_t resolution = uint16_t(clamp(uint32_t(_settings->resolution), 16u,
+				min(65535u, bgfx::getCaps()->limits.maxTextureSize) / 4));
+			if (_shadows->resolution != resolution) { resize(*_shadows, resolution); }
+			if (light.isStatic && _shadows->rendered && _shadows->light == _settings->light)
+			{
+				_shadows->active = true;
+				return;
+			}
 			const float lengthSq = dot(light.direction, light.direction);
 			FROST_ASSERT(isFinite(lengthSq) && lengthSq > 0.0f, "Shadow light direction must be finite and nonzero.");
 			const Vec3 direction = mul(light.direction, rsqrt(lengthSq));
@@ -575,11 +1040,8 @@ namespace frost
 			CameraComponent camera;
 			_cameras.get(_activeCamera->entity, [&](const CameraComponent& _camera) { camera = _camera; });
 			const float nearPlane = camera.nearPlane;
-			const float farPlane = min(camera.farPlane, _settings->distance);
+			const float farPlane = min(camera.farPlane, _settings->distance * _settings->distanceScale);
 			if (farPlane <= nearPlane) { return; }
-			const uint16_t resolution = uint16_t(clamp(uint32_t(_settings->resolution), 16u,
-				min(65535u, bgfx::getCaps()->limits.maxTextureSize) / 4));
-			if (_shadows->resolution != resolution) { resize(*_shadows, resolution); }
 			const bool homogeneous = bgfx::getCaps()->homogeneousDepth;
 			const float aspect = float(_frame->width) / float(_frame->height);
 			const Quaternion rotation = normalize(camera.rotation);
@@ -596,6 +1058,7 @@ namespace frost
 			const Vec3 up = abs(direction.y) > 0.99f ? Vec3{ 0.0f, 0.0f, 1.0f } : Vec3{ 0.0f, 1.0f, 0.0f };
 			mtxLookAt(lightView, { 0.0f, 0.0f, 0.0f }, mul(direction, -1.0f), up);
 			Aabb cascadeBounds[4];
+			MeshPass passes[4];
 			for (uint8_t cascade = 0; cascade < 4; ++cascade)
 			{
 				const float previous = 0 == cascade ? nearPlane : _shadows->splits[cascade - 1];
@@ -637,6 +1100,46 @@ namespace frost
 				mtxMul(_shadows->matrices[cascade], lightView, projection);
 				cascadeBounds[cascade].min = { x - radius, y - radius, minZ };
 				cascadeBounds[cascade].max = { x + radius, y + radius, maxZ };
+
+				MeshPass& pass = passes[cascade];
+				pass.view = kRenderPassShadow;
+				memCopy(pass.programs, _shadows->programs, sizeof(pass.programs));
+				memCopy(pass.instancedPrograms, _shadows->instancedPrograms, sizeof(pass.instancedPrograms));
+				pass.transform = _shadows->u_shadowViewProjection;
+				pass.tile = _shadows->u_shadowTile;
+				pass.cullView = lightView;
+				pass.viewProjection = _shadows->matrices[cascade];
+				pass.bounds = &cascadeBounds[cascade];
+				pass.state = BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS;
+				pass.resolution = resolution;
+				pass.flags = MeshPass::DepthOnly;
+				pass.cascade = cascade;
+
+				if (_graphics->frustumCulling)
+				{
+					// Bound potential receivers, then extrude toward the light. Casters need not be camera-visible.
+					Aabb receivers = { { kFloatLargest, kFloatLargest, kFloatLargest }, { -kFloatLargest, -kFloatLargest, -kFloatLargest } };
+					for (uint32_t ii = 0; ii < _render->count; ++ii)
+					{
+						const MeshRenderItem& item = *_render->items.getPtr(ii);
+						if (!item.visible || item.farDepth < start || item.nearDepth > _shadows->splits[cascade])
+						{
+							continue;
+						}
+						const Aabb bounds = transformBounds(item.bounds, lightView);
+						receivers.min = min(receivers.min, bounds.min);
+						receivers.max = max(receivers.max, bounds.max);
+					}
+					const float margin = texel * (1.0f + max(0.0f, _settings->normalBias) + max(0.0f, _settings->filterRadius));
+					const Vec3 padding = { margin, margin, margin };
+					receivers.min = sub(receivers.min, padding);
+					receivers.max = add(receivers.max, padding);
+					receivers.min.z -= max(0.0f, _settings->casterDistance);
+					cascadeBounds[cascade].min = max(cascadeBounds[cascade].min, receivers.min);
+					cascadeBounds[cascade].max = min(cascadeBounds[cascade].max, receivers.max);
+					const Aabb& bounds = cascadeBounds[cascade];
+					pass.active = bounds.min.x <= bounds.max.x && bounds.min.y <= bounds.max.y && bounds.min.z <= bounds.max.z;
+				}
 			}
 			// One atlas pass and clear. Transform/cull each group once for all cascades.
 			bgfx::setViewRect(kRenderPassShadow, 0, 0, uint16_t(resolution * 4), resolution);
@@ -644,68 +1147,13 @@ namespace frost
 			bgfx::setViewClear(kRenderPassShadow, BGFX_CLEAR_DEPTH, 0, 1.0f);
 			bgfx::setViewTransform(kRenderPassShadow, NULL, NULL);
 			bgfx::touch(kRenderPassShadow);
-			_meshes.each([&](const MeshComponent& _mesh, const TransformComponent* _transform)
-			{
-				if (!_mesh.castShadows) { return; }
-				float model[16];
-				if (!getMeshTransform(model, _transform)) { return; }
-				float modelLight[16];
-				mtxMul(modelLight, model, lightView);
-				const MeshRef* mesh = getMeshRef(_mesh.handle);
-				FROST_ASSERT(NULL != mesh, "Shadow casters must reference live meshes.");
-				const MeshLod& lod = mesh->lods[_settings->lods ? mesh->numLods - 1 : 0];
-				float modelProjection[4][16];
-				bool projectionReady[4] = {};
-				for (uint32_t ii = 0; ii < lod.numGroups; ++ii)
-				{
-					const MeshGroup& group = lod.groups[ii];
-					Aabb bounds;
-					bounds.min = { kFloatLargest, kFloatLargest, kFloatLargest };
-					bounds.max = { -kFloatLargest, -kFloatLargest, -kFloatLargest };
-					for (uint8_t jj = 0; jj < 8; ++jj)
-					{
-						const Aabb& local = group.bounds.aabb;
-						const Vec3 corner = mul({ jj & 1 ? local.max.x : local.min.x,
-							jj & 2 ? local.max.y : local.min.y,
-							jj & 4 ? local.max.z : local.min.z }, modelLight);
-						bounds.min = min(bounds.min, corner);
-						bounds.max = max(bounds.max, corner);
-					}
-					const MaterialCreate& material = getMeshMaterial(_mesh, *mesh, group.materialSlot);
-					const uint64_t state = meshState(material, _transform)
-						| BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS;
-					uint64_t triangles = 0;
-					for (uint16_t jj = 0; jj < group.numPrimitives; ++jj)
-					{
-						triangles += group.primitives[jj].numIndices / 3;
-					}
-					for (uint8_t cascade = 0; cascade < 4; ++cascade)
-					{
-						if (!overlap(bounds, cascadeBounds[cascade])) { continue; }
-						if (_draws->count == _draws->draws.getCapacity())
-						{
-							_draws->draws.setCapacity(max(128u, _draws->count * 2), _draws->count);
-						}
-						ShadowDraw& draw = *_draws->draws.getPtr(_draws->count++);
-						draw.group = &group;
-						draw.material = material.flags & MaterialFlags::Masked ? &material : NULL;
-						draw.state = state;
-						draw.cascade = cascade;
-						if (!projectionReady[cascade])
-						{
-							mtxMul(modelProjection[cascade], model, _shadows->matrices[cascade]);
-							projectionReady[cascade] = true;
-						}
-						memCopy(draw.modelProjection, modelProjection[cascade], sizeof(draw.modelProjection));
-						_stats->shadowCasters[cascade] += group.numPrimitives;
-						_stats->shadowTriangles += triangles;
-					}
-				}
-			});
-			quickSort(_draws->draws.getPtr(), _draws->count, compareShadowDraws);
-			submit(*_draws, *_settings, *_gbuffer, *_shadows, *_stats);
+			gatherMeshes(*_render, *_draws, passes, 4, *_graphics, _stats->shadows);
+			submitMeshes(*_draws, _gbuffer->material, passes, *_graphics, _stats->shadows);
 
 			_shadows->active = true;
+			_shadows->light = _settings->light;
+			_shadows->rendered = light.isStatic;
+			memCopy(_shadows->sceneView, _frame->view, sizeof(_shadows->sceneView));
 		}
 
 		static void shutdown(ResMutT<SunShadowTargets> _shadows)
@@ -759,7 +1207,7 @@ namespace frost
 	{
 		static void startup(ResMutT<LightResource> _light)
 		{
-			bgfx::setViewName(kRenderPassLight, "Directional Light");
+			bgfx::setViewName(kRenderPassLight, "Global Light");
 			bgfx::setViewMode(kRenderPassLight, bgfx::ViewMode::Sequential);
 
 			const bgfx::RendererType::Enum type = bgfx::getRendererType();
@@ -835,8 +1283,7 @@ namespace frost
 
 		static void update(ResT<RenderFrame> _frame, ResT<GBufferResource> _gbuffer,
 			QueryT<Entity, const DirectionalLightComponent&> _lights, ResMutT<LightResource> _light,
-			ResT<SunShadowTargets> _shadows, ResT<SunShadowResource> _shadowSettings,
-			ResT<GraphicsDesc> _graphics)
+			ResT<SunShadowTargets> _shadows, ResT<SunShadowResource> _shadowSettings)
 		{
 			if (!_frame->active)
 			{
@@ -856,8 +1303,7 @@ namespace frost
 
 			// Seed emission once, including frames without a directional light.
 			bindShadows(*_shadows, *_shadowSettings, *_frame, false);
-			const bool lunarDebug = _graphics->debugView >= GraphicsDebugView::LunarSky;
-			const float emission[4] = { 0.0f, 0.0f, 0.0f, lunarDebug ? -1.0f : 0.0f };
+			const float emission[4] = {};
 			bgfx::setUniform(_light->u_sunLuminance, emission);
 			bgfx::setUniform(_light->u_sunDirection, emission);
 			bindScene(*_frame, *_gbuffer, *_light);
@@ -867,9 +1313,7 @@ namespace frost
 
 			_lights.each([&](Entity _entity, const DirectionalLightComponent& _component)
 			{
-				if (0.0f == _component.intensity || (lunarDebug
-					&& (_graphics->debugView != GraphicsDebugView::MoonLight
-						|| _entity != _graphics->debugLight)))
+				if (0.0f == _component.intensity)
 				{
 					return;
 				}
@@ -1040,12 +1484,12 @@ namespace frost
 		};
 	}
 
-	static float skyDaylight(const SkyComponent& _sky)
+	static float skyDaylight(const SkyAtmosphereComponent& _sky)
 	{
 		return smoothStep(clamp((_sky.sunDirection.y + 0.207912f) / 0.242812f, 0.0f, 1.0f));
 	}
 
-	static Vec3 solarSkyLuminance(const SkyComponent& _sky)
+	static Vec3 solarSkyLuminance(const SkyAtmosphereComponent& _sky)
 	{
 		const float hour = isFinite(_sky.time) ? wrap(_sky.time, 24.0f) : 12.0f;
 		// Fade the daylight fit through twilight; never evaluate it
@@ -1080,7 +1524,7 @@ namespace frost
 		return dot(_rgb, { 0.2126f, 0.7152f, 0.0722f });
 	}
 
-	static Vec3 lunarSkyLuminance(const SkyComponent& _sky)
+	static Vec3 lunarSkyLuminance(const SkyAtmosphereComponent& _sky)
 	{
 		const float hour = isFinite(_sky.time) ? wrap(_sky.time, 24.0f) : 12.0f;
 		const float nightHour = hour < 12.0f ? min(hour, 5.0f) : max(hour, 20.0f);
@@ -1118,8 +1562,7 @@ namespace frost
 		bgfx::UniformHandle s_moon = BGFX_INVALID_HANDLE;
 	};
 
-	static void bindSky(const SkyResource& _sky, const SkyComponent& _component,
-		GraphicsDebugView::Enum _debug)
+	static void bindSky(const SkyResource& _sky, const SkyAtmosphereComponent& _component)
 	{
 		float direction[4] = {};
 		store(direction, _component.sunDirection);
@@ -1129,7 +1572,7 @@ namespace frost
 			max(0.0f, _component.sunTint.y) * max(0.0f, _component.sunIntensity),
 			max(0.0f, _component.sunTint.z) * max(0.0f, _component.sunIntensity), 0.0f };
 		const float parameters[] = { max(0.0001f, _component.sunSize), max(0.0001f, _component.sunBloom),
-			float(_debug), 0.0f };
+			0.0f, 0.0f };
 		float perez[20] = {};
 		for (uint8_t ii = 0; ii < 5; ++ii)
 		{
@@ -1169,10 +1612,10 @@ namespace frost
 
 	struct SkySystem
 	{
-		static void prepare(ResT<TimeResource> _time, QueryT<SkyComponent&> _skies)
+		static void prepare(ResT<TimeResource> _time, QueryT<SkyAtmosphereComponent&> _skies)
 		{
 			const float deltaTime = float(min(_time->delta, 0.1));
-			_skies.each([&](SkyComponent& _sky)
+			_skies.each([&](SkyAtmosphereComponent& _sky)
 			{
 				const float hours = isFinite(_sky.hps) ? deltaTime * _sky.hps : 0.0f;
 				_sky.time = wrap((isFinite(_sky.time) ? _sky.time : 12.0f) + hours, 24.0f);
@@ -1208,7 +1651,6 @@ namespace frost
 				_sky.moonElevation = toDeg(asin(clamp(_sky.moonDirection.y, -1.0f, 1.0f)));
 				const float phaseCosine = clamp(-dot(_sky.sunDirection, _sky.moonDirection), -1.0f, 1.0f);
 				const float phaseAngle = acos(phaseCosine);
-				_sky.moonPhase = (1.0f + phaseCosine) * 0.5f;
 				// Empirical lunar magnitude law, including the strong increase near full moon.
 				const float degrees = toDeg(phaseAngle);
 				const float brightness = phaseCosine < -0.99999f ? 0.0f
@@ -1231,7 +1673,7 @@ namespace frost
 
 		static void startup(ResMutT<SkyResource> _sky)
 		{
-			bgfx::setViewName(kRenderPassSky, "Sky");
+			bgfx::setViewName(kRenderPassSky, "Sky Atmosphere");
 
 			const bgfx::RendererType::Enum type = bgfx::getRendererType();
 			_sky->program = bgfx::createProgram(
@@ -1286,7 +1728,7 @@ namespace frost
 		}
 
 		static void update(ResT<RenderFrame> _frame, ResT<LightResource> _light,
-			QueryT<const SkyComponent&> _skies, ResT<SkyResource> _sky, ResT<GraphicsDesc> _graphics)
+			QueryT<const SkyAtmosphereComponent&> _skies, ResT<SkyResource> _sky)
 		{
 			if (!_frame->active)
 			{
@@ -1298,9 +1740,9 @@ namespace frost
 			bgfx::setViewClear(kRenderPassSky, BGFX_CLEAR_NONE);
 			bgfx::setViewTransform(kRenderPassSky, _frame->view, _frame->projection);
 
-			_skies.single([&](const SkyComponent& _component)
+			_skies.single([&](const SkyAtmosphereComponent& _component)
 			{
-				bindSky(*_sky, _component, _graphics->debugView);
+				bindSky(*_sky, _component);
 
 				bgfx::setVertexBuffer(0, _sky->vertices);
 				bgfx::setIndexBuffer(_sky->indices);
@@ -1332,44 +1774,644 @@ namespace frost
 
 } // namespace frost
 
-// Combine (tone mapping and debug views)
+// Local shadows and light
+namespace frost
+{
+	struct LocalLight
+	{
+		Entity entity;
+		// Position/range, radiance/type, direction/cone, right/width, up/height,
+		// inner cone/radius/two sided, shadow slice/bias/texel size, reserved.
+		float data[8][4] = {};
+		float projection[16] = {};
+		bool castShadows = true;
+		int16_t slot = -1;
+		bool isStatic = false;
+		bool visible = false;
+	};
+
+	struct LocalShadowState
+	{
+		Entity entity;
+		uint8_t type = 0;
+		bool rendered = false;
+	};
+
+	struct LocalLightResource
+	{
+		LocalLightResource() = default;
+		LocalLightResource(LocalLightResource&& _other) { lights = frost::move(_other.lights); }
+		DynamicStorageT<LocalLight> lights;
+		uint32_t count = 0;
+		bgfx::ProgramHandle program = BGFX_INVALID_HANDLE;
+		bgfx::ProgramHandle shadows[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+		bgfx::ProgramHandle instanced[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+		bgfx::UniformHandle parameters = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle projection = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle shadowParameters = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle pointSampler = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle spotSampler = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle pointDepth = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle spotDepth = BGFX_INVALID_HANDLE;
+		LocalShadowState slots[kMaxLocalShadows];
+		bgfx::ProgramHandle copy = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle shadowCamera = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle copyParameters = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle copyTypes = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle atlasSampler = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle atlas = BGFX_INVALID_HANDLE;
+		bgfx::FrameBufferHandle target = BGFX_INVALID_HANDLE;
+		uint16_t resolution = 0;
+	};
+
+	struct LocalLightSystem
+	{
+		static void startup(World& _world, ResMutT<LocalLightResource> _local)
+		{
+			_local->lights.setAllocator(_world.getAllocator());
+			_local->program = createProgram("vs_deferred_light", "fs_local_light");
+			_local->shadows[0] = createProgram("vs_local_shadow", "fs_local_shadow");
+			_local->shadows[1] = createProgram("vs_local_shadow", "fs_local_shadow_masked");
+			_local->instanced[0] = createProgram("vs_local_shadow_instanced", "fs_local_shadow");
+			_local->instanced[1] = createProgram("vs_local_shadow_instanced", "fs_local_shadow_masked");
+			_local->parameters = bgfx::createUniform("u_localLight", bgfx::UniformType::Vec4, 8);
+			_local->projection = bgfx::createUniform("u_localProjection", bgfx::UniformType::Mat4);
+			_local->shadowParameters = bgfx::createUniform("u_localShadow", bgfx::UniformType::Vec4, 3);
+			_local->pointSampler = bgfx::createUniform("s_pointShadows", bgfx::UniformType::Sampler);
+			_local->spotSampler = bgfx::createUniform("s_spotShadows", bgfx::UniformType::Sampler);
+			_local->copy = bgfx::createProgram(bgfx::createEmbeddedShader(s_embeddedShaders,
+				bgfx::getRendererType(), "cs_local_shadow_copy"), true);
+			FROST_ASSERT(bgfx::isValid(_local->copy), "Failed to create local shadow copy program.");
+			_local->shadowCamera = bgfx::createUniform("u_localShadowViewProjection", bgfx::UniformType::Mat4);
+			_local->copyParameters = bgfx::createUniform("u_localShadowCopy", bgfx::UniformType::Vec4);
+			_local->copyTypes = bgfx::createUniform("u_localShadowTypes", bgfx::UniformType::Vec4, 8);
+			_local->atlasSampler = bgfx::createUniform("s_localShadowAtlas", bgfx::UniformType::Sampler);
+			bgfx::setViewName(kRenderPassLocalShadow, "Local Shadow");
+			bgfx::setViewMode(kRenderPassLocalShadow, bgfx::ViewMode::Sequential);
+			bgfx::setViewName(kRenderPassLocalLight, "Local Light");
+			bgfx::setViewMode(kRenderPassLocalLight, bgfx::ViewMode::Sequential);
+		}
+
+		static void destroyTargets(LocalLightResource& _local)
+		{
+			if (bgfx::isValid(_local.target)) { bgfx::destroy(_local.target); }
+			if (bgfx::isValid(_local.atlas)) { bgfx::destroy(_local.atlas); }
+			_local.target = BGFX_INVALID_HANDLE;
+			_local.atlas = BGFX_INVALID_HANDLE;
+			if (bgfx::isValid(_local.pointDepth)) { bgfx::destroy(_local.pointDepth); }
+			if (bgfx::isValid(_local.spotDepth)) { bgfx::destroy(_local.spotDepth); }
+			_local.pointDepth = _local.spotDepth = BGFX_INVALID_HANDLE;
+			_local.resolution = 0;
+			for (auto& slot : _local.slots) { slot.rendered = false; }
+		}
+
+		static void resize(LocalLightResource& _local, uint16_t _resolution)
+		{
+			destroyTargets(_local);
+			const uint64_t flags = BGFX_TEXTURE_COMPUTE_WRITE | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP
+				| BGFX_SAMPLER_W_CLAMP | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT;
+			FROST_ASSERT(0 != (bgfx::getCaps()->supported & BGFX_CAPS_TEXTURE_CUBE_ARRAY)
+				&& 0 != (bgfx::getCaps()->supported & BGFX_CAPS_COMPUTE), "Local shadows require compute and cubemap arrays.");
+			_local.pointDepth = bgfx::createTextureCube(_resolution, false, kMaxLocalShadows, bgfx::TextureFormat::R32F, flags);
+			_local.spotDepth = bgfx::createTexture2D(_resolution, _resolution, false, kMaxLocalShadows, bgfx::TextureFormat::R32F, flags);
+			_local.atlas = bgfx::createTexture2D(_resolution * kLocalShadowColumns, _resolution * kLocalShadowRows,
+				false, 1, bgfx::TextureFormat::D16, BGFX_TEXTURE_RT | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT);
+			bgfx::Attachment attachment;
+			attachment.init(_local.atlas, bgfx::Access::Write, 0, 1, 0, 0);
+			_local.target = bgfx::createFrameBuffer(1, &attachment, false);
+			FROST_ASSERT(bgfx::isValid(_local.target), "Failed to create local shadow atlas.");
+			bgfx::setName(_local.atlas, "Local Shadow - depth atlas");
+			bgfx::setName(_local.pointDepth, "Local Shadow - point/rect cube array (six slices per light)");
+			bgfx::setName(_local.spotDepth, "Local Shadow - spot array (one slice per light)");
+			_local.resolution = _resolution;
+		}
+
+		template<typename Ty>
+		static LocalLight* append(World& _world, LocalLightResource& _local, const RenderFrame& _frame,
+			Entity _entity, const Ty& _component, const TransformComponent* _transform, float _type)
+		{
+			if (!isFinite(_component.intensity) || _component.intensity <= 0.0f
+				|| !isFinite(_component.range) || _component.range <= 0.01f)
+			{
+				return NULL;
+			}
+			float matrix[16];
+			if (!getWorldTransform(matrix, _world, _entity, _transform)) { return NULL; }
+			const Vec3 position = { matrix[12], matrix[13], matrix[14] };
+			const Vec3 extent = { _component.range, _component.range, _component.range };
+			const bool visible = visibleBounds({ sub(position, extent), add(position, extent) }, _frame.frustum);
+			// Bake static lights even outside the camera view, on their first scene frame.
+			if (!visible && !(_component.isStatic && _component.castShadows)) { return NULL; }
+			if (_local.count == _local.lights.getCapacity())
+			{
+				_local.lights.setCapacity(max(32u, _local.count * 2), _local.count);
+			}
+			LocalLight& light = *_local.lights.getPtr(_local.count++);
+			light = {};
+			light.entity = _entity;
+			light.castShadows = _component.castShadows;
+			light.isStatic = _component.isStatic;
+			light.visible = visible;
+			store(light.data[0], position);
+			light.data[0][3] = _component.range;
+			store(light.data[1], mul(max(_component.color, { 0, 0, 0 }), _component.intensity));
+			light.data[1][3] = _type;
+			store(light.data[2], normalize({ matrix[8], matrix[9], matrix[10] }));
+			store(light.data[3], normalize({ matrix[0], matrix[1], matrix[2] }));
+			store(light.data[4], normalize({ matrix[4], matrix[5], matrix[6] }));
+			light.data[5][1] = clamp(_component.sourceRadius, 0.01f, _component.range * 0.25f);
+			return &light;
+		}
+
+		static void shadows(World& _world, ResT<RenderFrame> _frame, ResT<MeshRenderResource> _meshes,
+			ResT<GBufferResource> _gbuffer, ResMutT<MeshDrawResource> _draws, ResT<GraphicsSettings> _graphics,
+			ResT<LocalShadowResource> _settings, ResMutT<LocalLightResource> _local, ResMutT<GraphicsStatsResource> _stats,
+			QueryT<Entity, const PointLightComponent&, OptionalT<const TransformComponent>> _points,
+			QueryT<Entity, const SpotLightComponent&, OptionalT<const TransformComponent>> _spots,
+			QueryT<Entity, const RectLightComponent&, OptionalT<const TransformComponent>> _rects)
+		{
+			_local->count = 0;
+			_stats->localShadows = {};
+			_stats->localLights = 0;
+			if (!_frame->active) { return; }
+			_points.each([&](Entity _entity, const PointLightComponent& _light, const TransformComponent* _transform)
+			{
+				append(_world, *_local, *_frame, _entity, _light, _transform, 0.0f);
+			});
+			_spots.each([&](Entity _entity, const SpotLightComponent& _light, const TransformComponent* _transform)
+			{
+				if (auto* light = append(_world, *_local, *_frame, _entity, _light, _transform, 1.0f))
+				{
+					light->data[2][3] = cos(toRad(clamp(_light.outerAngle, 0.1f, 89.0f)));
+					light->data[5][0] = cos(toRad(clamp(_light.innerAngle, 0.0f, clamp(_light.outerAngle, 0.1f, 89.0f))));
+				}
+			});
+			_rects.each([&](Entity _entity, const RectLightComponent& _light, const TransformComponent* _transform)
+			{
+				if (auto* light = append(_world, *_local, *_frame, _entity, _light, _transform, 2.0f))
+				{
+					light->data[3][3] = max(0.001f, _light.width) * 0.5f;
+					light->data[4][3] = max(0.001f, _light.height) * 0.5f;
+					if (_light.twoSided) { light->data[5][2] = 1.0f; }
+				}
+			});
+			for (uint32_t ii = 0; ii < _local->count; ++ii)
+			{
+				if (_local->lights.getPtr(ii)->visible) { ++_stats->localLights; }
+			}
+			if (0 == _local->count) { return; }
+			const uint16_t maxResolution = uint16_t(bgfx::getCaps()->limits.maxTextureSize / max(kLocalShadowColumns, kLocalShadowRows));
+			const uint16_t resolution = min(clamp(_settings->resolution, uint16_t(64), uint16_t(2048)), maxResolution);
+			if (_local->resolution != resolution) { resize(*_local, resolution); }
+
+			const uint16_t limit = min(_settings->maxLights, uint16_t(kMaxLocalShadows));
+			bool used[kMaxLocalShadows] = {};
+			for (uint32_t ii = 0; ii < _local->count; ++ii)
+			{
+				LocalLight& light = *_local->lights.getPtr(ii);
+				if (!light.castShadows) { continue; }
+				for (uint16_t jj = 0; jj < limit; ++jj)
+				{
+					if (_local->slots[jj].entity == light.entity && _local->slots[jj].type == uint8_t(light.data[1][3]))
+					{
+						light.slot = int16_t(jj);
+						used[jj] = true;
+						break;
+					}
+				}
+			}
+			for (uint16_t ii = 0; ii < kMaxLocalShadows; ++ii)
+			{
+				if (!used[ii]) { _local->slots[ii] = {}; }
+			}
+			float types[32];
+			for (float& type : types) { type = -1.0f; }
+			bgfx::setViewRect(kRenderPassLocalShadow, 0, 0, resolution * kLocalShadowColumns, resolution * kLocalShadowRows);
+			bgfx::setViewFrameBuffer(kRenderPassLocalShadow, _local->target);
+			bgfx::setViewClear(kRenderPassLocalShadow, BGFX_CLEAR_DEPTH, 0, 1.0f);
+			bgfx::setViewTransform(kRenderPassLocalShadow, NULL, NULL);
+			uint16_t copies = 0;
+			for (uint32_t ii = 0; ii < _local->count; ++ii)
+			{
+				LocalLight& light = *_local->lights.getPtr(ii);
+				if (!light.castShadows) { continue; }
+				if (light.slot < 0)
+				{
+					for (uint16_t jj = 0; jj < limit; ++jj)
+					{
+						if (!used[jj])
+						{
+							_local->slots[jj] = { light.entity, uint8_t(light.data[1][3]), false };
+							light.slot = int16_t(jj);
+							used[jj] = true;
+							break;
+						}
+					}
+				}
+				if (light.slot < 0) { continue; }
+				const Vec3 position = load<Vec3>(light.data[0]);
+				const Vec3 direction = load<Vec3>(light.data[2]);
+				const bool spot = 1.0f == light.data[1][3];
+
+				float projection[16], view[6][16];
+				float fov = 90.0f;
+				if (spot) { fov = toDeg(acos(light.data[2][3])) * 2.0f; }
+				mtxProj(projection, fov, 1.0f, light.data[5][1], light.data[0][3], bgfx::getCaps()->homogeneousDepth);
+				if (spot)
+				{
+					mtxLookAt(view[0], position, add(position, direction), load<Vec3>(light.data[4]));
+					mtxMul(light.projection, view[0], projection);
+				}
+				LocalShadowState& state = _local->slots[light.slot];
+				if (light.isStatic && state.rendered) { continue; }
+				types[light.slot] = 0.0f;
+				if (spot) { types[light.slot] = 1.0f; }
+				copies = max(copies, uint16_t(light.slot + 1));
+				uint8_t faces = 6;
+				if (spot) { faces = 1; }
+				const Vec3 extent = { light.data[0][3], light.data[0][3], light.data[0][3] };
+				const Aabb bounds = { sub(position, extent), add(position, extent) };
+				for (uint8_t face = 0; face < faces; ++face)
+				{
+					if (!spot) { cubeView(view[face], position, face); }
+					float viewProjection[16];
+					mtxMul(viewProjection, view[face], projection);
+					Plane frustum[6] = { InitNone, InitNone, InitNone, InitNone, InitNone, InitNone };
+					buildFrustumPlanes(frustum, viewProjection, bgfx::getCaps()->homogeneousDepth);
+					MeshPass pass;
+					pass.view = kRenderPassLocalShadow;
+					pass.flags = MeshPass::DepthOnly | MeshPass::IndependentView;
+					pass.state = BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS;
+					pass.frustum = frustum;
+					pass.bounds = &bounds;
+					pass.parameters = _local->shadowParameters;
+					pass.numParameters = 3;
+					pass.camera = _local->shadowCamera;
+					memCopy(pass.cameraMatrix, viewProjection, sizeof(viewProjection));
+					const uint16_t tile = uint16_t(light.slot * 6 + face);
+					const uint16_t xx = tile % kLocalShadowColumns;
+					const uint16_t yy = tile / kLocalShadowColumns;
+					pass.values[8] = 1.0f / float(kLocalShadowColumns);
+					pass.values[9] = 1.0f / float(kLocalShadowRows);
+					pass.values[10] = (float(xx) * 2.0f + 1.0f) / float(kLocalShadowColumns) - 1.0f;
+					pass.values[11] = 1.0f - (float(yy) * 2.0f + 1.0f) / float(kLocalShadowRows);
+					pass.scissor[0] = xx * resolution;
+					pass.scissor[1] = yy * resolution;
+					pass.scissor[2] = pass.scissor[3] = resolution;
+					memCopy(pass.values, light.data[0], 16);
+					memCopy(pass.values + 4, light.data[2], 12);
+					if (spot) { pass.values[7] = 1.0f; }
+					memCopy(pass.programs, _local->shadows, sizeof(pass.programs));
+					memCopy(pass.instancedPrograms, _local->instanced, sizeof(pass.instancedPrograms));
+					gatherMeshes(*_meshes, *_draws, &pass, 1, *_graphics, _stats->localShadows);
+					submitMeshes(*_draws, _gbuffer->material, &pass, *_graphics, _stats->localShadows);
+				}
+				state.rendered = light.isStatic;
+			}
+			if (copies > 0)
+			{
+				bgfx::touch(kRenderPassLocalShadow);
+				float parameters[] = { float(resolution), float(kLocalShadowColumns), float(kLocalShadowRows), 0.0f };
+				if (bgfx::getCaps()->originBottomLeft) { parameters[3] = 1.0f; }
+				bgfx::setUniform(_local->copyParameters, parameters);
+				bgfx::setUniform(_local->copyTypes, types, 8);
+				bgfx::setTexture(2, _local->atlasSampler, _local->atlas);
+				bgfx::setImage(0, _local->pointDepth, 0, kMaxLocalShadows * 6, 0, bgfx::Access::Write);
+				bgfx::setImage(1, _local->spotDepth, 0, kMaxLocalShadows, 0, bgfx::Access::Write);
+				bgfx::dispatch(kRenderPassLocalShadow, _local->copy, (resolution + 7) / 8, (resolution + 7) / 8, copies * 6);
+			}
+		}
+
+		static void update(ResT<RenderFrame> _frame, ResT<GBufferResource> _gbuffer, ResT<LightResource> _light,
+			ResMutT<LocalLightResource> _local, ResT<LocalShadowResource> _settings)
+		{
+			if (!_frame->active || 0 == _local->count) { return; }
+			bgfx::setViewRect(kRenderPassLocalLight, 0, 0, _frame->width, _frame->height);
+			bgfx::setViewFrameBuffer(kRenderPassLocalLight, _light->frameBuffer);
+			bgfx::setViewClear(kRenderPassLocalLight, BGFX_CLEAR_NONE);
+			bgfx::setViewTransform(kRenderPassLocalLight, NULL, _frame->screenProjection);
+			float viewProjection[16];
+			mtxMul(viewProjection, _frame->view, _frame->projection);
+			for (uint32_t ii = 0; ii < _local->count; ++ii)
+			{
+				LocalLight& light = *_local->lights.getPtr(ii);
+				if (!light.visible) { continue; }
+				light.data[6][0] = float(light.slot);
+				light.data[6][1] = max(0.0f, _settings->depthBias);
+				light.data[6][2] = max(0.0f, _settings->normalBias);
+				light.data[6][3] = 1.0f / float(_local->resolution);
+				// A projected range box bounds the fullscreen triangle; the shader clips the volume.
+				float x0 = 1.0f, y0 = 1.0f, x1 = -1.0f, y1 = -1.0f;
+				bool full = false;
+				for (uint8_t corner = 0; corner < 8; ++corner)
+				{
+					float point[4] = { light.data[0][0], light.data[0][1], light.data[0][2], 1.0f };
+					for (uint8_t axis = 0; axis < 3; ++axis)
+					{
+						float offset = light.data[0][3];
+						if (0 == (corner & (1 << axis))) { offset = -offset; }
+						point[axis] += offset;
+					}
+					float clip[4];
+					vec4MulMtx(clip, point, viewProjection);
+					if (clip[3] <= 0.0f) { full = true; break; }
+					const float x = clip[0] / clip[3], y = -clip[1] / clip[3];
+					x0 = min(x0, x); y0 = min(y0, y); x1 = max(x1, x); y1 = max(y1, y);
+				}
+				if (full) { x0 = y0 = -1.0f; x1 = y1 = 1.0f; }
+				const uint16_t x = uint16_t(clamp((x0 * 0.5f + 0.5f) * _frame->width, 0.0f, float(_frame->width)));
+				const uint16_t y = uint16_t(clamp((y0 * 0.5f + 0.5f) * _frame->height, 0.0f, float(_frame->height)));
+				const uint16_t right = uint16_t(clamp(ceil((x1 * 0.5f + 0.5f) * _frame->width), 0.0f, float(_frame->width)));
+				const uint16_t bottom = uint16_t(clamp(ceil((y1 * 0.5f + 0.5f) * _frame->height), 0.0f, float(_frame->height)));
+				if (right <= x || bottom <= y) { continue; }
+				bgfx::setScissor(x, y, right - x, bottom - y);
+				LightSystem::bindScene(*_frame, *_gbuffer, *_light);
+				bgfx::setTexture(6, _local->pointSampler, _local->pointDepth);
+				bgfx::setTexture(7, _local->spotSampler, _local->spotDepth);
+				bgfx::setUniform(_local->parameters, light.data, 8);
+				bgfx::setUniform(_local->projection, light.projection);
+				screenSpaceTriangle(_light->layout);
+				bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_BLEND_ADD);
+				bgfx::submit(kRenderPassLocalLight, _local->program);
+			}
+		}
+
+		static void shutdown(ResMutT<LocalLightResource> _local)
+		{
+			destroyTargets(*_local);
+			bgfx::destroy(_local->program);
+			for (auto program : _local->shadows) { bgfx::destroy(program); }
+			for (auto program : _local->instanced) { bgfx::destroy(program); }
+			bgfx::destroy(_local->parameters);
+			bgfx::destroy(_local->projection);
+			bgfx::destroy(_local->shadowParameters);
+			bgfx::destroy(_local->pointSampler);
+			bgfx::destroy(_local->spotSampler);
+			bgfx::destroy(_local->copy);
+			bgfx::destroy(_local->shadowCamera);
+			bgfx::destroy(_local->copyParameters);
+			bgfx::destroy(_local->copyTypes);
+			bgfx::destroy(_local->atlasSampler);
+		}
+	};
+}
+
+// Environment capture and image based lighting
+namespace frost
+{
+	struct EnvironmentResource
+	{
+		bgfx::ProgramHandle capture = BGFX_INVALID_HANDLE;
+		bgfx::ProgramHandle instanced = BGFX_INVALID_HANDLE;
+		bgfx::ProgramHandle filter = BGFX_INVALID_HANDLE;
+		bgfx::ProgramHandle sky = BGFX_INVALID_HANDLE;
+		bgfx::ProgramHandle light = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle captureParameters = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle captureLights = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle captureCamera = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle captureSampler = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle filterParameters = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle lightParameters = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle sourceSampler = BGFX_INVALID_HANDLE;
+		bgfx::UniformHandle irradianceSampler = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle source = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle depth = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle irradiance = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle specular = BGFX_INVALID_HANDLE;
+		bgfx::FrameBufferHandle target = BGFX_INVALID_HANDLE;
+		float luminance[4] = {};
+		uint16_t resolution = 0;
+		uint8_t mips = 0;
+		bool active = false;
+		Entity entity;
+		bool rendered = false;
+	};
+
+	struct EnvironmentSystem
+	{
+		static void startup(ResMutT<EnvironmentResource> _environment)
+		{
+			_environment->capture = createProgram("vs_capture", "fs_capture");
+			_environment->instanced = createProgram("vs_capture_instanced", "fs_capture");
+			_environment->filter = bgfx::createProgram(bgfx::createEmbeddedShader(s_embeddedShaders,
+				bgfx::getRendererType(), "cs_environment_filter"), true);
+			FROST_ASSERT(bgfx::isValid(_environment->filter), "Failed to create environment filtering compute program.");
+			_environment->sky = createProgram("vs_deferred_light", "fs_environment_sky");
+			_environment->light = createProgram("vs_deferred_light", "fs_environment_light");
+			_environment->captureParameters = bgfx::createUniform("u_capture", bgfx::UniformType::Vec4, 2);
+			_environment->captureLights = bgfx::createUniform("u_captureLights", bgfx::UniformType::Vec4, 8);
+			_environment->filterParameters = bgfx::createUniform("u_environmentFilter", bgfx::UniformType::Vec4);
+			_environment->lightParameters = bgfx::createUniform("u_environmentLight", bgfx::UniformType::Vec4);
+			_environment->sourceSampler = bgfx::createUniform("s_environment", bgfx::UniformType::Sampler);
+			_environment->irradianceSampler = bgfx::createUniform("s_irradiance", bgfx::UniformType::Sampler);
+			_environment->captureCamera = bgfx::createUniform("u_captureViewProjection", bgfx::UniformType::Mat4);
+			_environment->captureSampler = bgfx::createUniform("s_environmentCapture", bgfx::UniformType::Sampler);
+			bgfx::setViewName(kRenderPassEnvironment, "Environment");
+			bgfx::setViewMode(kRenderPassEnvironment, bgfx::ViewMode::Sequential);
+		}
+
+		static void destroyTargets(EnvironmentResource& _environment)
+		{
+			if (bgfx::isValid(_environment.target)) { bgfx::destroy(_environment.target); }
+			_environment.target = BGFX_INVALID_HANDLE;
+			const bgfx::TextureHandle textures[] = { _environment.source, _environment.depth, _environment.irradiance, _environment.specular };
+			for (auto texture : textures)
+			{
+				if (bgfx::isValid(texture)) { bgfx::destroy(texture); }
+			}
+			_environment.source = _environment.depth = _environment.irradiance = _environment.specular = BGFX_INVALID_HANDLE;
+			_environment.resolution = 0;
+			_environment.rendered = false;
+		}
+
+		static void resize(EnvironmentResource& _environment, uint16_t _resolution)
+		{
+			destroyTargets(_environment);
+			const uint64_t sampler = BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP | BGFX_SAMPLER_W_CLAMP;
+			_environment.source = bgfx::createTexture2D(_resolution * 3, _resolution * 2, false, 1,
+				bgfx::TextureFormat::RGBA16F, BGFX_TEXTURE_RT | sampler);
+			_environment.depth = bgfx::createTexture2D(_resolution * 3, _resolution * 2, false, 1,
+				bgfx::TextureFormat::D16, BGFX_TEXTURE_RT);
+			_environment.irradiance = bgfx::createTextureCube(16, false, 1, bgfx::TextureFormat::RGBA16F,
+				BGFX_TEXTURE_COMPUTE_WRITE | sampler);
+			_environment.specular = bgfx::createTextureCube(_resolution, true, 1, bgfx::TextureFormat::RGBA16F,
+				BGFX_TEXTURE_COMPUTE_WRITE | sampler);
+			bgfx::setName(_environment.source, "Environment - capture atlas");
+			bgfx::setName(_environment.irradiance, "Environment - diffuse irradiance");
+			bgfx::setName(_environment.specular, "Environment - GGX roughness mip chain");
+			bgfx::Attachment attachments[2];
+			attachments[0].init(_environment.source);
+			attachments[1].init(_environment.depth, bgfx::Access::Write, 0, 1, 0, 0);
+			_environment.target = bgfx::createFrameBuffer(2, attachments, false);
+			FROST_ASSERT(bgfx::isValid(_environment.target), "Failed to create environment capture target.");
+			_environment.mips = 1;
+			for (uint16_t size = _resolution; size > 1; size >>= 1) { ++_environment.mips; }
+			_environment.resolution = _resolution;
+		}
+
+		static void update(World& _world, ResT<MeshRenderResource> _meshes,
+			ResT<GBufferResource> _gbuffer, ResT<LightResource> _light, ResT<SkyResource> _sky,
+			ResMutT<MeshDrawResource> _draws, ResT<GraphicsSettings> _graphics, ResMutT<GraphicsStatsResource> _stats,
+			ResMutT<EnvironmentResource> _environment, QueryT<Entity, const SkyLightComponent&, OptionalT<const TransformComponent>> _skylights,
+			QueryT<const SkyAtmosphereComponent&> _atmospheres, QueryT<const DirectionalLightComponent&> _directional)
+		{
+			_environment->active = false;
+			_stats->environment = {};
+			_skylights.single([&](Entity _entity, const SkyLightComponent& _component, const TransformComponent* _transform)
+			{
+				uint16_t resolution = 16;
+				while (resolution < min(128u, _component.resolution)) { resolution *= 2; }
+				if (_environment->resolution != resolution) { resize(*_environment, resolution); }
+				store(_environment->luminance, mul(max(_component.color, { 0, 0, 0 }), max(0.0f, _component.intensity)));
+				_environment->luminance[3] = float(_environment->mips - 1);
+				if (_component.isStatic && _environment->rendered && _environment->entity == _entity)
+				{
+					_environment->active = true;
+					return;
+				}
+				float transform[16];
+				if (!getWorldTransform(transform, _world, _entity, _transform)) { return; }
+				const Vec3 position = { transform[12], transform[13], transform[14] };
+				const float threshold = max(0.0f, _component.skyDistanceThreshold);
+				float farPlane = max(1000.0f, threshold * 2.0f);
+				for (uint32_t ii = 0; ii < _meshes->count; ++ii)
+				{
+					const Aabb& bounds = _meshes->items.getPtr(ii)->bounds;
+					farPlane = max(farPlane, length(sub(getCenter(bounds), position)) + length(getExtents(bounds)) + 1.0f);
+				}
+				float projection[16];
+				float screenProjection[16];
+				mtxOrtho(screenProjection, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 100.0f, 0.0f, bgfx::getCaps()->homogeneousDepth);
+				mtxProj(projection, 90.0f, 1.0f, max(0.05f, threshold * 0.25f), farPlane, bgfx::getCaps()->homogeneousDepth);
+				float lights[32] = {};
+				uint8_t count = 0;
+				_directional.each([&](const DirectionalLightComponent& _direction)
+				{
+					if (count < 4 && _direction.intensity > 0.0f && dot(_direction.direction, _direction.direction) > 0.0f)
+					{
+						store(lights + count * 4, normalize(_direction.direction));
+						store(lights + 16 + count * 4, mul(max(_direction.color, { 0, 0, 0 }), _direction.intensity));
+						++count;
+					}
+				});
+				bgfx::setViewRect(kRenderPassEnvironment, 0, 0, resolution * 3, resolution * 2);
+				bgfx::setViewFrameBuffer(kRenderPassEnvironment, _environment->target);
+				bgfx::setViewClear(kRenderPassEnvironment, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0, 1.0f);
+				bgfx::setViewTransform(kRenderPassEnvironment, NULL, screenProjection);
+				bgfx::touch(kRenderPassEnvironment);
+				float parameters[] = { 0.0f, 0.0f, float(resolution), 0.0f };
+				if (bgfx::getCaps()->originBottomLeft) { parameters[3] = 1.0f; }
+				_atmospheres.single([&](const SkyAtmosphereComponent& _atmosphere)
+				{
+					bindSky(*_sky, _atmosphere);
+					bgfx::setUniform(_environment->filterParameters, parameters);
+					screenSpaceTriangle(_light->layout);
+					bgfx::setState(BGFX_STATE_WRITE_RGB);
+					bgfx::submit(kRenderPassEnvironment, _environment->sky);
+				});
+				for (uint8_t face = 0; face < 6; ++face)
+				{
+					float view[16], viewProjection[16];
+					cubeView(view, position, face);
+					mtxMul(viewProjection, view, projection);
+					Plane frustum[6] = { InitNone, InitNone, InitNone, InitNone, InitNone, InitNone };
+					buildFrustumPlanes(frustum, viewProjection, bgfx::getCaps()->homogeneousDepth);
+					MeshPass pass;
+					pass.view = kRenderPassEnvironment;
+					pass.programs[0] = _environment->capture;
+					pass.instancedPrograms[0] = _environment->instanced;
+					pass.state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS;
+					pass.flags = MeshPass::IndependentView;
+					pass.frustum = frustum;
+					pass.parameters = _environment->captureParameters;
+					pass.origin = position;
+					pass.minimumDistance = threshold;
+					store(pass.values, position);
+					pass.values[3] = threshold;
+					pass.values[4] = 1.0f / 3.0f;
+					pass.values[5] = 0.5f;
+					pass.values[6] = float(face % 3) * (2.0f / 3.0f) - 2.0f / 3.0f;
+					pass.values[7] = 0.5f - float(face / 3);
+					pass.camera = _environment->captureCamera;
+					memCopy(pass.cameraMatrix, viewProjection, sizeof(viewProjection));
+					pass.scissor[0] = (face % 3) * resolution;
+					pass.scissor[1] = (face / 3) * resolution;
+					pass.scissor[2] = pass.scissor[3] = resolution;
+					pass.lights = _environment->captureLights;
+					memCopy(pass.lightValues, lights, sizeof(lights));
+					gatherMeshes(*_meshes, *_draws, &pass, 1, *_graphics, _stats->environment);
+					submitMeshes(*_draws, _gbuffer->material, &pass, *_graphics, _stats->environment);
+				}
+				// Filter all six layers together, after this frame's capture, in the same sequential view.
+				for (uint8_t filter = 0; filter <= _environment->mips; ++filter)
+				{
+					uint16_t size = 16;
+					uint8_t mip = 0;
+					bgfx::TextureHandle output = _environment->irradiance;
+					parameters[1] = -1.0f;
+					if (filter > 0)
+					{
+						mip = filter - 1;
+						size = max(uint16_t(1), uint16_t(resolution >> mip));
+						output = _environment->specular;
+						parameters[1] = float(mip) / float(_environment->mips - 1);
+					}
+					parameters[0] = float(size);
+					bgfx::setUniform(_environment->filterParameters, parameters);
+					bgfx::setTexture(1, _environment->captureSampler, _environment->source);
+					bgfx::setImage(0, output, 0, 6, mip, bgfx::Access::Write);
+					bgfx::dispatch(kRenderPassEnvironment, _environment->filter, (size + 7) / 8, (size + 7) / 8, 6);
+				}
+				_environment->active = true;
+				_environment->entity = _entity;
+				_environment->rendered = _component.isStatic;
+			});
+			if (!_environment->active) { _environment->rendered = false; }
+		}
+
+		static void light(ResT<RenderFrame> _frame, ResT<GBufferResource> _gbuffer, ResT<LightResource> _light,
+			ResT<EnvironmentResource> _environment)
+		{
+			if (!_frame->active || !_environment->active) { return; }
+			LightSystem::bindScene(*_frame, *_gbuffer, *_light);
+			bgfx::setTexture(6, _environment->sourceSampler, _environment->specular);
+			bgfx::setTexture(7, _environment->irradianceSampler, _environment->irradiance);
+			bgfx::setUniform(_environment->lightParameters, _environment->luminance);
+			screenSpaceTriangle(_light->layout);
+			bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_BLEND_ADD);
+			bgfx::submit(kRenderPassLight, _environment->light);
+		}
+
+		static void shutdown(ResMutT<EnvironmentResource> _environment)
+		{
+			destroyTargets(*_environment);
+			const bgfx::ProgramHandle programs[] = { _environment->capture, _environment->instanced, _environment->filter, _environment->sky, _environment->light };
+			for (auto program : programs)
+			{
+				bgfx::destroy(program);
+			}
+			const bgfx::UniformHandle uniforms[] = { _environment->captureParameters, _environment->captureLights, _environment->filterParameters,
+				_environment->lightParameters, _environment->sourceSampler, _environment->irradianceSampler,
+				_environment->captureCamera, _environment->captureSampler };
+			for (auto uniform : uniforms)
+			{
+				bgfx::destroy(uniform);
+			}
+		}
+	};
+}
+
+
+// Tone mapping
 namespace frost
 {
 	struct ToneMapResource
 	{
 		bgfx::ProgramHandle program = BGFX_INVALID_HANDLE;
 		bgfx::UniformHandle s_scene = BGFX_INVALID_HANDLE;
-		bgfx::UniformHandle s_albedo = BGFX_INVALID_HANDLE;
-		bgfx::UniformHandle s_normal = BGFX_INVALID_HANDLE;
-		bgfx::UniformHandle s_depth = BGFX_INVALID_HANDLE;
 		bgfx::UniformHandle u_outputParameters = BGFX_INVALID_HANDLE;
-		bgfx::UniformHandle u_invSceneViewProj = BGFX_INVALID_HANDLE;
 		bgfx::VertexLayout layout;
-		bgfx::UniformHandle s_material = BGFX_INVALID_HANDLE;
-		bgfx::UniformHandle s_emissive = BGFX_INVALID_HANDLE;
 	};
-
-	static void submitOutput(bgfx::ViewId _view, uint32_t _mode, const RenderFrame& _frame,
-		const GraphicsDesc& _graphics, const GBufferResource& _gbuffer,
-		const LightResource& _light, const ToneMapResource& _output,
-		const SunShadowTargets& _shadows, const SunShadowResource& _shadowSettings)
-	{
-		const float parameters[4] = { _frame.exposure, _graphics.preventBanding ? 1.0f : 0.0f,
-			float(_mode), 1.0f / max(0.001f, _graphics.debugDepth) };
-		bgfx::setViewTransform(_view, NULL, _frame.screenProjection);
-		bgfx::setUniform(_output.u_outputParameters, parameters);
-		bgfx::setUniform(_output.u_invSceneViewProj, _frame.inverseViewProjection);
-		bgfx::setTexture(0, _output.s_scene, _light.texture);
-		bgfx::setTexture(1, _output.s_albedo, _gbuffer.textures[0]);
-		bgfx::setTexture(2, _output.s_normal, _gbuffer.textures[1]);
-		bgfx::setTexture(3, _output.s_depth, _gbuffer.textures[2]);
-		bgfx::setTexture(4, _output.s_material, _gbuffer.textures[3]);
-		bgfx::setTexture(6, _output.s_emissive, _gbuffer.textures[4]);
-		bindShadows(_shadows, _shadowSettings, _frame, true);
-		screenSpaceTriangle(_output.layout);
-		bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
-		bgfx::submit(_view, _output.program);
-	}
 
 	struct ToneMapSystem
 	{
@@ -1382,20 +2424,13 @@ namespace frost
 				bgfx::createEmbeddedShader(s_embeddedShaders, type, "fs_deferred_combine"), true);
 			FROST_ASSERT(bgfx::isValid(_output->program), "Failed to create the output program.");
 			_output->s_scene = bgfx::createUniform("s_scene", bgfx::UniformType::Sampler);
-			_output->s_albedo = bgfx::createUniform("s_albedo", bgfx::UniformType::Sampler);
-			_output->s_normal = bgfx::createUniform("s_normal", bgfx::UniformType::Sampler);
-			_output->s_depth = bgfx::createUniform("s_depth", bgfx::UniformType::Sampler);
-			_output->s_material = bgfx::createUniform("s_material", bgfx::UniformType::Sampler);
-			_output->s_emissive = bgfx::createUniform("s_emissive", bgfx::UniformType::Sampler);
 			_output->u_outputParameters = bgfx::createUniform("u_outputParameters", bgfx::UniformType::Vec4);
-			_output->u_invSceneViewProj = bgfx::createUniform("u_invSceneViewProj", bgfx::UniformType::Mat4);
 			_output->layout.begin().add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
 				.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float).end();
 		}
 
 		static void update(ResT<RenderFrame> _frame, ResT<GraphicsDesc> _graphics,
-			ResT<GBufferResource> _gbuffer, ResT<LightResource> _light, ResT<ToneMapResource> _output,
-			ResT<SunShadowTargets> _shadows, ResT<SunShadowResource> _shadowSettings)
+			ResT<LightResource> _light, ResT<ToneMapResource> _output)
 		{
 			if (0 == _frame->width || 0 == _frame->height) { return; }
 			// Presentation and UI still work without a selected camera.
@@ -1403,80 +2438,22 @@ namespace frost
 			bgfx::setViewFrameBuffer(kRenderPassToneMap, BGFX_INVALID_HANDLE);
 			bgfx::setViewClear(kRenderPassToneMap, BGFX_CLEAR_COLOR, UINT32_C(0x000000ff));
 			bgfx::touch(kRenderPassToneMap);
-			if (_frame->active)
-			{
-				submitOutput(kRenderPassToneMap, GraphicsDebugView::None, *_frame, *_graphics, *_gbuffer, *_light, *_output,
-				*_shadows, *_shadowSettings);
-			}
+			if (!_frame->active) { return; }
+
+			const float parameters[] = { _frame->exposure, _graphics->preventBanding ? 1.0f : 0.0f, 0.0f, 0.0f };
+			bgfx::setViewTransform(kRenderPassToneMap, NULL, _frame->screenProjection);
+			bgfx::setUniform(_output->u_outputParameters, parameters);
+			bgfx::setTexture(0, _output->s_scene, _light->texture);
+			screenSpaceTriangle(_output->layout);
+			bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+			bgfx::submit(kRenderPassToneMap, _output->program);
 		}
 
 		static void shutdown(ResMutT<ToneMapResource> _output)
 		{
 			bgfx::destroy(_output->program);
 			bgfx::destroy(_output->s_scene);
-			bgfx::destroy(_output->s_albedo);
-			bgfx::destroy(_output->s_normal);
-			bgfx::destroy(_output->s_depth);
-			bgfx::destroy(_output->s_material);
-			bgfx::destroy(_output->s_emissive);
 			bgfx::destroy(_output->u_outputParameters);
-			bgfx::destroy(_output->u_invSceneViewProj);
-		}
-	};
-
-	struct DebugViewSystem
-	{
-		static void startup()
-		{
-			bgfx::setViewName(kRenderPassDebug, "Debug View");
-		}
-
-		static void update(ResT<RenderFrame> _frame, ResT<GraphicsDesc> _graphics,
-			ResT<GBufferResource> _gbuffer, ResT<LightResource> _light, ResT<ToneMapResource> _output,
-			ResT<SunShadowTargets> _shadows, ResT<SunShadowResource> _shadowSettings)
-		{
-			if (!_frame->active || _graphics->debugView <= GraphicsDebugView::None
-				|| _graphics->debugView >= GraphicsDebugView::Count) { return; }
-			bgfx::setViewRect(kRenderPassDebug, 0, 0, _frame->width, _frame->height);
-			bgfx::setViewFrameBuffer(kRenderPassDebug, BGFX_INVALID_HANDLE);
-			bgfx::setViewClear(kRenderPassDebug, BGFX_CLEAR_NONE);
-			submitOutput(kRenderPassDebug, _graphics->debugView, *_frame, *_graphics, *_gbuffer, *_light, *_output,
-				*_shadows, *_shadowSettings);
-		}
-	};
-
-	struct GraphicsStatsSystem
-	{
-		static void update(ResT<GraphicsDesc> _graphics, ResMutT<GraphicsStatsResource> _stats)
-		{
-			const bgfx::Stats* stats = bgfx::getStats();
-			double* times[] = { &_stats->geometryMs, &_stats->lightMs, &_stats->skyMs,
-				&_stats->toneMapMs, &_stats->debugViewMs, &_stats->uiMs };
-			const bgfx::ViewId views[] = { kRenderPassGeometry, kRenderPassLight, kRenderPassSky,
-				kRenderPassToneMap, kRenderPassDebug, kRenderPassUi };
-			for (double* time : times) { *time = -1.0; }
-			_stats->shadowMs = -1.0;
-			_stats->gpuMs = -1.0;
-			_stats->draws = stats->numDraw;
-			_stats->textures = stats->numTextures;
-			_stats->renderTargetBytes = stats->rtMemoryUsed;
-			if (!_graphics->gpuProfiling || stats->gpuTimerFreq <= 0) { return; }
-			const double milliseconds = 1000.0 / double(stats->gpuTimerFreq);
-			if (stats->gpuTimeEnd > stats->gpuTimeBegin)
-			{
-				_stats->gpuMs = double(stats->gpuTimeEnd - stats->gpuTimeBegin) * milliseconds;
-			}
-			for (uint16_t ii = 0; ii < stats->numViews; ++ii)
-			{
-				const bgfx::ViewStats& view = stats->viewStats[ii];
-				if (view.gpuTimeEnd <= view.gpuTimeBegin) { continue; }
-				const double duration = double(view.gpuTimeEnd - view.gpuTimeBegin) * milliseconds;
-				for (uint32_t jj = 0; jj < FROST_COUNTOF(views); ++jj)
-				{
-					if (view.view == views[jj]) { *times[jj] = duration; }
-				}
-				if (view.view == kRenderPassShadow) { _stats->shadowMs = duration; }
-			}
 		}
 	};
 
@@ -1833,42 +2810,54 @@ namespace frost
 		_app.insertResource<LightResource>();
 		_app.getWorld().initResource<SunShadowResource>();
 		_app.insertResource<SunShadowTargets>();
-		_app.insertResource<ShadowDrawResource>();
+		_app.getWorld().initResource<GraphicsSettings>();
+		_app.insertResource<GraphicsStatsResource>();
+		_app.insertResource<MeshRenderResource>();
+		_app.insertResource<MeshDrawResource>();
 		_app.insertResource<SkyResource>();
+		_app.insertResource<EnvironmentResource>();
+		_app.insertResource<LocalLightResource>();
+		_app.getWorld().initResource<LocalShadowResource>();
 		_app.insertResource<ToneMapResource>();
-		_app.getWorld().initResource<GraphicsStatsResource>();
 
 		// Initialize the backend before creating GPU resources.
 		SystemId startup = _app.addSystems(EcsStage::Startup, RendererSystem::startup).id();
 		startup = _app.addSystems(EcsStage::Startup, TextureSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, MaterialSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, MeshSystem::startup).after(startup).id();
+		startup = _app.addSystems(EcsStage::Startup, MeshRenderSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, GBufferSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, LightSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, SkySystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, SunShadowSystem::startup).after(startup).id();
+		startup = _app.addSystems(EcsStage::Startup, EnvironmentSystem::startup).after(startup).id();
+		startup = _app.addSystems(EcsStage::Startup, LocalLightSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, ToneMapSystem::startup).after(startup).id();
-		startup = _app.addSystems(EcsStage::Startup, DebugViewSystem::startup).after(startup).id();
 		_app.addSystems(EcsStage::Startup, UiSystem::startup).after(startup);
 
-		_app.addSystems(EcsStage::PreUpdate, GraphicsStatsSystem::update);
 		_app.addSystems(EcsStage::PreUpdate, SkySystem::prepare);
 
 		// Prepare shared frame data, then submit passes in dependency order.
 		SystemId update = _app.addSystems(EcsStage::PostUpdate, RendererSystem::update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, RenderFrameSystem::update).after(update).id();
+		update = _app.addSystems(EcsStage::PostUpdate, MeshRenderSystem::update).after(update).id();
+		update = _app.addSystems(EcsStage::PostUpdate, EnvironmentSystem::update).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, GBufferSystem::update).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, SunShadowSystem::update).after(update).id();
+		update = _app.addSystems(EcsStage::PostUpdate, LocalLightSystem::shadows).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, LightSystem::update).after(update).id();
+		update = _app.addSystems(EcsStage::PostUpdate, EnvironmentSystem::light).after(update).id();
+		update = _app.addSystems(EcsStage::PostUpdate, LocalLightSystem::update).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, SkySystem::update).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, ToneMapSystem::update).after(update).id();
-		update = _app.addSystems(EcsStage::PostUpdate, DebugViewSystem::update).after(update).id();
 		_app.addSystems(EcsStage::PostUpdate, UiSystem::update).after(update);
 		_app.addSystems(EcsStage::Last, RendererSystem::endFrame);
 
 		// Release GPU resources before stopping the backend.
 		SystemId shutdown = _app.addSystems(EcsStage::Shutdown, UiSystem::shutdown).id();
 		shutdown = _app.addSystems(EcsStage::Shutdown, ToneMapSystem::shutdown).after(shutdown).id();
+		shutdown = _app.addSystems(EcsStage::Shutdown, LocalLightSystem::shutdown).after(shutdown).id();
+		shutdown = _app.addSystems(EcsStage::Shutdown, EnvironmentSystem::shutdown).after(shutdown).id();
 		shutdown = _app.addSystems(EcsStage::Shutdown, SunShadowSystem::shutdown).after(shutdown).id();
 		shutdown = _app.addSystems(EcsStage::Shutdown, SkySystem::shutdown).after(shutdown).id();
 		shutdown = _app.addSystems(EcsStage::Shutdown, LightSystem::shutdown).after(shutdown).id();
