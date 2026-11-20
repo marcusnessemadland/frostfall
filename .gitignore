@@ -4,7 +4,6 @@ CMakeFiles
 CMakeScripts
 Testing
 Makefile
-!examples/helloworld/offline/makefile
 cmake_install.cmake
 install_manifest.txt
 compile_commands.json
@@ -29,3 +28,5 @@ plugins/graphics/shaders/.shader-settings*
 .idea
 tags
 *.pyc
+/examples/helloworld/offline/*
+!/examples/helloworld/offline/makefile
