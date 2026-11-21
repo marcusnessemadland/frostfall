@@ -11,12 +11,15 @@
 namespace frost
 {
 	FROST_HANDLE(SceneHandle);
+
 	FROST_ERROR_RESULT(kErrorSceneCreate, FROST_MAKEFOURCC('s', 'c', 'n', 'c'));
 	FROST_ERROR_RESULT(kErrorSceneFormat, FROST_MAKEFOURCC('s', 'c', 'n', 'f'));
+
 	constexpr uint32_t kAssetTypeScene = FROST_MAKEFOURCC('S', 'C', 'N', 'E');
 	constexpr uint32_t kSceneVersion = 1;
 
 	/// Resolved dependencies, in the order of the scene asset's dependency table.
+	///
 	struct SceneDependency
 	{
 		uint32_t type;
@@ -26,21 +29,33 @@ namespace frost
 		SceneDependency(TextureHandle _handle) : type(kAssetTypeTexture), handle(_handle.idx) {}
 	};
 
-	/// Consumes _mem, including on failure. Retains the resolved dependencies.
-	SceneHandle createScene(const Memory* _mem, const SceneDependency* _dependencies, uint32_t _numDependencies,
-		Error* _err = ErrorIgnore{});
+	///
+	SceneHandle createScene(const Memory* _mem, const SceneDependency* _dependencies,
+		uint32_t _numDependencies, Error* _err = ErrorIgnore{});
+
+	///
 	SceneHandle createScene(const Memory* _mem, Error* _err = ErrorIgnore{});
+
+	///
 	void addRef(SceneHandle _handle);
+
+	///
 	void release(SceneHandle _handle);
+
+	///
 	Guid getGuid(SceneHandle _handle);
 
-	/// Creates an independent entity hierarchy. Its entities retain the scene asset.
+	///
 	Entity spawnScene(World& _world, SceneHandle _handle, Error* _err = ErrorIgnore{});
-	/// Removes the instance's entities, including members reparented outside its root.
+
+	///
 	void despawnScene(World& _world, Entity _root);
+
+	///
 	Entity findSceneEntity(const World& _world, Entity _root, StringView _name);
 
 	/// Explicit authored-field metadata shared by scenec and scene instantiation.
+	///
 	struct SceneField
 	{
 		enum Type { Float, Uint32, Bool, Mesh, Texture, Materials };
@@ -50,6 +65,7 @@ namespace frost
 		uint32_t count = 1;
 	};
 
+	///
 	struct SceneComponentSchema
 	{
 		uint32_t id;
@@ -60,19 +76,35 @@ namespace frost
 		void (*defaults)(void*);
 		void (*spawn)(World&, Entity, const void*);
 	};
+
 	const SceneComponentSchema* getSceneComponentSchema(uint32_t _id);
 	const SceneComponentSchema* getSceneComponentSchema(StringView _name);
 
+} // namespace frost
+
+namespace frost
+{
+	///
+	///
 	struct SceneDesc
 	{
 		uint16_t maxScenes = 256;
 	};
 
-	/// Scene asset storage. Add after GraphicsPlugin; creation is available after Startup.
+	///
+	///
+	struct SceneSettings
+	{
+
+	};
+
+	///
+	///
 	struct ScenePlugin : PluginI
 	{
 		virtual void build(App& _app) override;
 	};
-}
+
+} // namespace frost
 
 #endif // FROST_PLUGIN_SCENE_H_HEADER_GUARD

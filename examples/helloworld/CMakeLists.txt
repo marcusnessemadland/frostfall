@@ -33,8 +33,8 @@ add_custom_command(TARGET helloworld POST_BUILD
         VERBATIM
 )
 
-# Run the debugger from the executable directory.
+# Resolve relative asset paths from the authored runtime directory when debugging.
 set_target_properties(helloworld PROPERTIES
         FOLDER "frost/examples"
-        VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:helloworld>"
+        VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/runtime"
 )

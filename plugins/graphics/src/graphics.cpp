@@ -48,6 +48,9 @@ namespace frost
 				debugPrintf("Failed to initialize bgfx.\n");
 				frost::exit(kExitFailure, false);
 			}
+
+			// Set debug TODO: Make it within FROST_DEBUG macros?
+			bgfx::setDebug(BGFX_DEBUG_TEXT);
 		}
 
 		static void update(ResT<DisplayResource> _display)
@@ -73,6 +76,106 @@ namespace frost
 
 		static void endFrame()
 		{
+			// Perfomance stats TODO:
+			{
+				const bgfx::Stats* stats = bgfx::getStats();
+
+				bgfx::dbgTextClear(0x00, false);
+
+				const double cpuMs = stats->cpuTimerFreq > 0
+					? double(stats->cpuTimeEnd - stats->cpuTimeBegin)
+						* 1000.0 / double(stats->cpuTimerFreq)
+					: 0.0;
+
+				const double cpuToMs = stats->cpuTimerFreq > 0
+					? 1000.0 / double(stats->cpuTimerFreq)
+					: 0.0;
+
+				const double frameMs = double(stats->cpuTimeFrame) * cpuToMs;
+				const double fps = frameMs > 0.0 ? 1000.0 / frameMs : 0.0;
+
+				const double gameMs = stats->numEncoders > 0
+					? double(stats->encoderStats[0].cpuTimeEnd
+						   - stats->encoderStats[0].cpuTimeBegin) * cpuToMs
+					: 0.0;
+
+				const double gpuMs = stats->gpuTimerFreq > 0
+					? double(stats->gpuTimeEnd - stats->gpuTimeBegin)
+						* 1000.0 / double(stats->gpuTimerFreq)
+					: 0.0;
+
+				constexpr uint8_t green = 0x0A;
+				constexpr uint16_t padding = 1;
+				constexpr uint16_t textWidth = 39; // Width of longest stats line
+				const uint16_t x = stats->textWidth > textWidth + padding
+					? stats->textWidth - textWidth - padding
+					: 0;
+				const uint16_t y = 1;
+
+				bgfx::dbgTextPrintf(x, y + 0, 0x0A,
+					"cpu(game):   %5.2f ms [ %5.2f ms ]",
+					gameMs, 0.0f);
+
+				bgfx::dbgTextPrintf(x, y + 1, 0x0A,
+					"cpu(render): %5.2f ms [ %5.2f ms ]",
+					cpuMs, 0.0f);
+
+				bgfx::dbgTextPrintf(x, y + 2, 0x0A,
+					"gpu:         %5.2f ms [ %5.2f ms ]",
+					gpuMs, 0.0f);
+
+				bgfx::dbgTextPrintf(x, y + 3, 0x0A,
+					"framerate:   %5.2f fps",
+					fps);
+			}
+
+			// Build stats TODO:
+			{
+				const bgfx::Caps* caps = bgfx::getCaps();
+				const bgfx::Stats* stats = bgfx::getStats();
+
+				const char* renderer = bgfx::getRendererName(
+					bgfx::getRendererType());
+
+				const char* vendor = "Unknown";
+
+				switch (caps->vendorId)
+				{
+				case 0x10DE: vendor = "NVIDIA"; break;
+				case 0x1002: vendor = "AMD";    break;
+				case 0x8086: vendor = "Intel";  break;
+				case 0x106B: vendor = "Apple";  break;
+				case 0x13B5: vendor = "ARM";    break;
+				case 0x5143: vendor = "Qualcomm"; break;
+				}
+
+				constexpr uint8_t white = 0x0F;
+				constexpr uint16_t x = 1;
+
+				const uint16_t y = stats->textHeight > 3
+					? stats->textHeight - 3
+					: 0;
+
+				bgfx::dbgTextPrintf(x, y, white,
+					"%s %s @%s %s",
+					renderer,
+			#ifdef NDEBUG
+					"release",
+			#else
+					"debug",
+			#endif
+					__DATE__,
+					__TIME__);
+
+				bgfx::dbgTextPrintf(x + 4, y + 1, white,
+					"%s GPU [%04X:%04X] / VRAM: %lld MB",
+					vendor,
+					caps->vendorId,
+					caps->deviceId,
+					(long long)(stats->gpuMemoryMax / (1024 * 1024)));
+			}
+
+			// Swap buffers
 			bgfx::frame();
 		}
 

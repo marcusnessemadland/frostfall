@@ -258,7 +258,7 @@ namespace frost
 			December,
 		};
 		float time = 12.0f;
-		float hps = 0.0f;
+		float hps = 0.5f;
 		Month month = June;
 		float latitude = 50.0f;
 		float turbidity = 2.15f;
@@ -425,9 +425,9 @@ namespace frost
 		RendererType::Enum type = RendererType::Count; //!< Renderer backend graphics API .
 
 		/// TODO: Define macros for static arrays and make them synced with BGFX_CONFIG_ macros
-		uint16_t maxMeshes = 1024;
-		uint16_t maxTextures = 1024;
-		uint16_t maxMaterials = 1024;
+		uint16_t maxMeshes = 4096;
+		uint16_t maxTextures = 4096;
+		uint16_t maxMaterials = 4096;
 
 		bool preventBanding = true;
 	};

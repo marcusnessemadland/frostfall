@@ -56,57 +56,6 @@ namespace
 				frost::devmenuComponent<&CameraControllerComponent::lag>(camera)).setParent(folder);
 			_world.spawn(frost::DevmenuItemComponent{ "Reset camera", 6 },
 				frost::DevmenuButtonComponent{}, ResetCameraItem{ camera }).setParent(folder);
-
-			const frost::Entity graphics = _world.spawn(frost::DevmenuItemComponent{ "Graphics", 4 },
-				frost::DevmenuFolderComponent{}).setParent(_menu->custom).id();
-			_world.spawn(frost::DevmenuItemComponent{ "Instancing", 0 },
-				frost::DevmenuBoolComponent{},
-				frost::devmenuResource<&frost::GraphicsSettings::instancing>()).setParent(graphics);
-			_world.spawn(frost::DevmenuItemComponent{ "Frustum culling", 1 },
-				frost::DevmenuBoolComponent{},
-				frost::devmenuResource<&frost::GraphicsSettings::frustumCulling>()).setParent(graphics);
-			_world.spawn(frost::DevmenuItemComponent{ "LODs", 2 },
-				frost::DevmenuBoolComponent{},
-				frost::devmenuResource<&frost::GraphicsSettings::lods>()).setParent(graphics);
-			_world.spawn(frost::DevmenuItemComponent{ "LOD pixels", 3 },
-				frost::DevmenuFloatComponent{ 0, 1, 1024, 16, 0 },
-				frost::devmenuResource<&frost::GraphicsSettings::lodPixels>()).setParent(graphics);
-			_world.spawn(frost::DevmenuItemComponent{ "Geometry draws", 4 },
-				frost::DevmenuIntComponent{ 0, 0, INT32_MAX, 1, true },
-				frost::DevmenuBindingComponent{ {}, [](const frost::World& _world, frost::Entity)
-				{
-					return double(_world.getResource<frost::GraphicsStatsResource>()->geometry.draws);
-				} }).setParent(graphics);
-			_world.spawn(frost::DevmenuItemComponent{ "Shadow draws", 5 },
-				frost::DevmenuIntComponent{ 0, 0, INT32_MAX, 1, true },
-				frost::DevmenuBindingComponent{ {}, [](const frost::World& _world, frost::Entity)
-				{
-					return double(_world.getResource<frost::GraphicsStatsResource>()->shadows.draws);
-				} }).setParent(graphics);
-			_world.spawn(frost::DevmenuItemComponent{ "Shared geometry", 6 },
-				frost::DevmenuIntComponent{ 0, 0, INT32_MAX, 1, true },
-				frost::DevmenuBindingComponent{ {}, [](const frost::World& _world, frost::Entity)
-				{
-					return double(_world.getResource<frost::GraphicsStatsResource>()->sharedGeometries);
-				} }).setParent(graphics);
-
-			const frost::Entity shadows = _world.spawn(frost::DevmenuItemComponent{ "Shadows", 5 },
-				frost::DevmenuFolderComponent{}).setParent(_menu->custom).id();
-			_world.spawn(frost::DevmenuItemComponent{ "Distance scale", 0 },
-				frost::DevmenuFloatComponent{ 0, 0, 2, 0.05, 2 },
-				frost::devmenuResource<&frost::SunShadowResource::distanceScale>()).setParent(shadows);
-			_world.spawn(frost::DevmenuItemComponent{ "Distance", 1 },
-				frost::DevmenuFloatComponent{ 0, 0, 1000, 5, 0 },
-				frost::devmenuResource<&frost::SunShadowResource::distance>()).setParent(shadows);
-			_world.spawn(frost::DevmenuItemComponent{ "Caster distance", 2 },
-				frost::DevmenuFloatComponent{ 0, 0, 1000, 5, 0 },
-				frost::devmenuResource<&frost::SunShadowResource::casterDistance>()).setParent(shadows);
-			_world.spawn(frost::DevmenuItemComponent{ "Split lambda", 3 },
-				frost::DevmenuFloatComponent{ 0, 0, 1, 0.05, 2 },
-				frost::devmenuResource<&frost::SunShadowResource::splitLambda>()).setParent(shadows);
-			_world.spawn(frost::DevmenuItemComponent{ "Resolution", 4 },
-				frost::DevmenuIntComponent{ 0, 256, 4096, 256 },
-				frost::devmenuResource<&frost::SunShadowResource::resolution>()).setParent(shadows);
 		}
 
 		static void update(frost::World& _world,

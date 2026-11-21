@@ -32,48 +32,48 @@ namespace
 	struct CameraControllerComponent
 	{
 		CameraMode::Enum mode = CameraMode::Orbit;
+		CameraMode::Enum previousMode = CameraMode::Orbit;
+
 		float distance = 5.0f;
 		float lag = 0.15f;
 		float speed = 10.0f;
 		float boost = 3.0f;
 		float sensitivity = 2.5f;
+
 		frost::Vec3 desiredPosition = { 0.0f, 0.0f, 0.0f };
 		frost::Quaternion desiredRotation = { 0.0f, 0.0f, 0.0f, 1.0f };
-		CameraMode::Enum previousMode = CameraMode::Orbit;
-
 		frost::Vec3 startPosition = { 0, 0, 0 };
 		frost::Quaternion startRotation = { 0, 0, 0, 1 };
 
 		frost::Entity target; //!< Optional entity to orbit, must contain a transform component
-		bool initialized = false; // TODO: Is this really needed?
 	};
 
 	/// Camera system.
 	///
 	struct CameraSystem
 	{
-		static void setup(frost::World& _world, frost::Entity _camera)
+		static void startup(frost::World& _world)
 		{
-			auto* controller = _world.emplace<CameraControllerComponent>(_camera);
-			controller->distance = 10.0f;
-			controller->mode = CameraMode::Flying;
-			controller->target = _camera;
-			const auto* camera = _world.get<frost::CameraComponent>(_camera);
-			controller->startPosition = camera->position;
-			controller->startRotation = camera->rotation;
-			_world.getResourceMut<frost::ActiveCameraResource>()->entity = _camera;
-		}
+			// Setup internal frost camera
+			_world.query<frost::Entity, CameraControllerComponent&>().each(
+			[&](frost::Entity _entity, CameraControllerComponent& _controller)
+			{
+				frost::CameraComponent camera;
 
-		static void reset(frost::CameraComponent& _camera, CameraControllerComponent& _controller, const frost::TransformComponent* _target)
-		{
-			_camera.position = CameraMode::Orbit == _controller.mode && NULL != _target
-				? frost::sub(_target->position, { 0.0f, 0.0f, _controller.distance })
-				: _controller.startPosition;
-			_camera.rotation = CameraMode::Orbit == _controller.mode ? frost::Quaternion{ 0, 0, 0, 1 } : _controller.startRotation;
-			_controller.desiredPosition = _camera.position;
-			_controller.desiredRotation = _camera.rotation;
-			_controller.previousMode = _controller.mode;
-			_controller.initialized = true;
+				if (const auto* transform = _world.get<frost::TransformComponent>(_entity))
+				{
+					camera.position = transform->position;
+					camera.rotation = transform->rotation;
+				}
+				_controller.startPosition = camera.position;
+				_controller.startRotation = camera.rotation;
+
+				// Reset values based on transform component of target
+				reset(camera, _controller, _world.get<frost::TransformComponent>(_controller.target));
+
+				_world.commands().entity(_entity).insert(camera);
+			});
+			_world.flush();
 		}
 
 		static void update(
@@ -95,13 +95,11 @@ namespace
 			_cameras.get(_activeCamera->entity,
 			[&](frost::CameraComponent& _camera, CameraControllerComponent& _controller)
 			{
-				if (!_controller.initialized || _controller.previousMode != _controller.mode)
+				if (_controller.previousMode != _controller.mode)
 				{
-					// TODO: Could we call ::reset here?
 					_controller.desiredPosition = _camera.position;
 					_controller.desiredRotation = _camera.rotation;
 					_controller.previousMode = _controller.mode;
-					_controller.initialized = true;
 				}
 
 				const frost::Vec3 forward = frost::mul({ 0.0f, 0.0f, 1.0f }, _controller.desiredRotation);
@@ -167,6 +165,31 @@ namespace
 				_camera.position = frost::lerp(_camera.position, _controller.desiredPosition, alpha);
 				_camera.rotation = frost::normalize(frost::slerp(_camera.rotation, _controller.desiredRotation, alpha));
 			});
+		}
+
+		static void reset(frost::CameraComponent& _camera, CameraControllerComponent& _controller, const frost::TransformComponent* _target)
+		{
+			if (CameraMode::Orbit == _controller.mode && NULL != _target)
+			{
+				_camera.position = frost::sub(_target->position, { 0.0f, 0.0f, _controller.distance });
+			}
+			else
+			{
+				_camera.position = _controller.startPosition;
+			}
+
+			if (CameraMode::Orbit == _controller.mode)
+			{
+				_camera.rotation = frost::Quaternion{ 0, 0, 0, 1 };
+			}
+			else
+			{
+				_camera.rotation = _controller.startRotation;
+			}
+
+			_controller.desiredPosition = _camera.position;
+			_controller.desiredRotation = _camera.rotation;
+			_controller.previousMode = _controller.mode;
 		}
 	};
 

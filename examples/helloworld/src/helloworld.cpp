@@ -20,10 +20,11 @@ namespace
 	{
 		virtual void build(frost::App& _app) override
 		{
-			_app.addSystems(frost::EcsStage::PostStartup, SceneSystem::startup);
-			_app.addSystems(frost::EcsStage::PostStartup, DevmenuSystem::startup);
+			frost::SystemId startup = _app.addSystems(frost::EcsStage::PostStartup, SceneSystem::startup).id();
+			startup = _app.addSystems(frost::EcsStage::PostStartup, CameraSystem::startup).after(startup).id();
+			_app.addSystems(frost::EcsStage::PostStartup, DevmenuSystem::startup).after(startup);
 			_app.addSystems(frost::EcsStage::Update, CameraSystem::update);
-			_app.addSystems(frost::EcsStage::Update, SkyLightingSystem::update);
+			_app.addSystems(frost::EcsStage::Update, SceneSystem::update);
 			_app.addSystems(frost::EcsStage::Update, DevmenuSystem::update);
 		}
 	};
@@ -87,9 +88,8 @@ int main(int _argc, const char* _argv[])
 			frost::DeviceDesc{ "Frostfall Engine | Helloworld Example", width, height });
 		app.addPlugins<frost::DevicePlugin>();
 
-		frost::GraphicsDesc graphics;
-		graphics.maxTextures = 4096;
-		app.insertResource<frost::GraphicsDesc>(graphics);
+		app.insertResource<frost::GraphicsDesc>(
+			frost::GraphicsDesc{ frost::RendererType::Count /*auto*/ });
 		app.addPlugins<frost::GraphicsPlugin>();
 
 		app.insertResource<frost::SceneDesc>();
