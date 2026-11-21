@@ -18,7 +18,8 @@ namespace
 		static void startup(frost::World& _world)
 		{
 			frost::Error err;
-			AssetLoader assets(_world.getAllocator(), "assets/courtyard", &err);
+			const frost::FilePath executable(frost::Dir::Executable);
+			AssetLoader assets(_world.getAllocator(), executable.getPath(), &err);
 			const frost::SceneHandle scene = assets.loadScene("courtyard.bin", &err);
 			const frost::Entity root = frost::spawnScene(_world, scene, &err);
 			frost::release(scene);
