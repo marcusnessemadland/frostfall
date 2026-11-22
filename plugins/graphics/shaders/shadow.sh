@@ -3,7 +3,10 @@
  * License: See LICENSE in the project root.
  */
 
-SAMPLER2D(s_shadowAtlas, 5);
+#ifndef FROST_SHADOW_SAMPLER
+#define FROST_SHADOW_SAMPLER 5
+#endif
+SAMPLER2D(s_shadowAtlas, FROST_SHADOW_SAMPLER);
 uniform mat4 u_shadowMatrix[4];
 uniform vec4 u_shadowSplits;
 uniform vec4 u_shadowTexels; // World units per texel, one per cascade.
@@ -18,7 +21,7 @@ float shadowDepth(vec2 _uv, int _cascade)
 	vec2 uv = clamp(_uv, vec2_splat(u_shadowInfo.x * 0.5),
 		vec2_splat(1.0 - u_shadowInfo.x * 0.5));
 	uv.x = (uv.x + float(_cascade)) * 0.25;
-	return texture2D(s_shadowAtlas, uv).r;
+	return texture2DLod(s_shadowAtlas, uv, 0.0).r;
 }
 
 int shadowCascade(float _depth)
@@ -29,7 +32,7 @@ int shadowCascade(float _depth)
 	return 3;
 }
 
-float sampleCascade(vec3 _position, vec3 _normal, int _cascade)
+vec3 shadowProjected(vec3 _position, vec3 _normal, int _cascade)
 {
 	float texel = _cascade == 0 ? u_shadowTexels.x : (_cascade == 1 ? u_shadowTexels.y
 		: (_cascade == 2 ? u_shadowTexels.z : u_shadowTexels.w));
@@ -44,6 +47,13 @@ float sampleCascade(vec3 _position, vec3 _normal, int _cascade)
 	vec3 projected = clip.xyz / clip.w;
 	vec2 uv = vec2(projected.x, toClipSpaceY(projected.y)) * 0.5 + 0.5;
 	projected.z = toDepthTextureZ(projected.z);
+	return vec3(uv, projected.z);
+}
+
+float sampleCascade(vec3 _position, vec3 _normal, int _cascade)
+{
+	vec3 projected = shadowProjected(_position, _normal, _cascade);
+	vec2 uv = projected.xy;
 	if (any(lessThan(uv, vec2_splat(0.0))) || any(greaterThan(uv, vec2_splat(1.0)))
 		|| projected.z < 0.0 || projected.z > 1.0) { return 1.0; }
 	float result = 0.0;
@@ -78,4 +88,27 @@ float shadowVisibility(vec3 _position, vec3 _normal)
 		result = mix(result, next, transition);
 	}
 	return result;
+}
+
+bool shadowCoverage(vec3 _position, vec3 _normal)
+{
+	if (u_shadowInfo.z < 0.5) { return false; }
+	float depth = mul(u_sceneView, vec4(_position, 1.0)).z;
+	if (depth < 0.0 || depth > u_shadowInfo.y) { return false; }
+	int cascade = shadowCascade(depth);
+	float nearSplit = cascade == 0 ? 0.0 : (cascade == 1 ? u_shadowSplits.x
+		: (cascade == 2 ? u_shadowSplits.y : u_shadowSplits.z));
+	float farSplit = cascade == 0 ? u_shadowSplits.x : (cascade == 1 ? u_shadowSplits.y
+		: (cascade == 2 ? u_shadowSplits.z : u_shadowSplits.w));
+	bool blend = depth > farSplit - max((farSplit - nearSplit) * u_shadowParameters.z, 0.0001);
+	if (blend && cascade == 3) { return false; }
+	float border = u_shadowInfo.x * (u_shadowParameters.w + 0.5);
+	for (int ii = 0; ii < 2; ++ii)
+	{
+		if (ii == 1 && !blend) { break; }
+		vec3 projected = shadowProjected(_position, _normal, cascade + ii);
+		if (any(lessThan(projected.xy, vec2_splat(border))) || any(greaterThan(projected.xy, vec2_splat(1.0 - border)))
+			|| projected.z < 0.0 || projected.z > 1.0) { return false; }
+	}
+	return true;
 }

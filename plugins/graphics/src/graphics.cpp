@@ -215,6 +215,14 @@ namespace frost
 #include "fs_local_light.bin.h"
 #include "cs_environment_filter.bin.h"
 #include "fs_environment_sky.bin.h"
+#include "cs_reflection_material.bin.h"
+#include "cs_reflection_prepare.bin.h"
+#include "cs_reflection_capture.bin.h"
+#include "cs_reflection_prefilter.bin.h"
+#include "cs_reflection_trace.bin.h"
+#include "cs_reflection_shade.bin.h"
+#include "cs_reflection_filter.bin.h"
+#include "fs_reflection.bin.h"
 
 #include <bgfx/embedded_shader.h>
 
@@ -225,7 +233,8 @@ namespace frost
 	constexpr uint8_t kMaxLocalShadows = 30;
 	constexpr uint8_t kLocalShadowColumns = 15;
 	constexpr uint8_t kLocalShadowRows = (kMaxLocalShadows * 6 + kLocalShadowColumns - 1) / kLocalShadowColumns;
-	constexpr bgfx::ViewId kRenderPassEnvironment = 0;
+	constexpr bgfx::ViewId kRenderPassRayMaterials = 0;
+	constexpr bgfx::ViewId kRenderPassEnvironment = kRenderPassRayMaterials + 1;
 	constexpr bgfx::ViewId kRenderPassEnvironmentFilter = kRenderPassEnvironment + 1;
 	constexpr bgfx::ViewId kRenderPassGeometry = kRenderPassEnvironmentFilter + 1;
 	constexpr bgfx::ViewId kRenderPassShadow = kRenderPassGeometry + 1;
@@ -233,7 +242,14 @@ namespace frost
 	constexpr bgfx::ViewId kRenderPassLocalShadowCopy = kRenderPassLocalShadow + 1;
 	constexpr bgfx::ViewId kRenderPassLight = kRenderPassLocalShadowCopy + 1;
 	constexpr bgfx::ViewId kRenderPassLocalLight = kRenderPassLight + 1;
-	constexpr bgfx::ViewId kRenderPassSky = kRenderPassLocalLight + 1;
+	constexpr bgfx::ViewId kRenderPassReflectionCapture = kRenderPassLocalLight + 1;
+	constexpr bgfx::ViewId kRenderPassReflectionPrefilter = kRenderPassReflectionCapture + 1;
+	constexpr bgfx::ViewId kRenderPassReflectionPrepare = kRenderPassReflectionPrefilter + 1;
+	constexpr bgfx::ViewId kRenderPassReflectionTrace = kRenderPassReflectionPrepare + 1;
+	constexpr bgfx::ViewId kRenderPassReflectionShade = kRenderPassReflectionTrace + 1;
+	constexpr bgfx::ViewId kRenderPassReflectionFilter = kRenderPassReflectionShade + 1;
+	constexpr bgfx::ViewId kRenderPassReflection = kRenderPassReflectionFilter + 1;
+	constexpr bgfx::ViewId kRenderPassSky = kRenderPassReflection + 1;
 	constexpr bgfx::ViewId kRenderPassToneMap = kRenderPassSky + 1;
 	constexpr bgfx::ViewId kRenderPassUi = kRenderPassToneMap + 1;
 
@@ -263,6 +279,14 @@ namespace frost
 		BGFX_EMBEDDED_SHADER(fs_local_light),
 		BGFX_EMBEDDED_SHADER(cs_environment_filter),
 		BGFX_EMBEDDED_SHADER(fs_environment_sky),
+		BGFX_EMBEDDED_SHADER(cs_reflection_material),
+		BGFX_EMBEDDED_SHADER(cs_reflection_prepare),
+		BGFX_EMBEDDED_SHADER(cs_reflection_capture),
+		BGFX_EMBEDDED_SHADER(cs_reflection_prefilter),
+		BGFX_EMBEDDED_SHADER(cs_reflection_trace),
+		BGFX_EMBEDDED_SHADER(cs_reflection_shade),
+		BGFX_EMBEDDED_SHADER(cs_reflection_filter),
+		BGFX_EMBEDDED_SHADER(fs_reflection),
 		BGFX_EMBEDDED_SHADER_END()
 	};
 
@@ -1128,10 +1152,9 @@ namespace frost
 		bool rendered = false;
 	};
 
-	static void bindShadows(const SunShadowTargets& _shadows, const SunShadowResource& _settings,
+	static void bindShadowUniforms(const SunShadowTargets& _shadows, const SunShadowResource& _settings,
 		const RenderFrame& _frame, bool _enabled)
 	{
-		bgfx::setTexture(5, _shadows.sampler, _shadows.atlas);
 		const float parameters[] = { max(0.0f, _settings.depthBias), max(0.0f, _settings.normalBias),
 			clamp(_settings.blend, 0.0f, 0.3f), max(0.0f, _settings.filterRadius) };
 		const float info[] = { 1.0f / float(_shadows.resolution), _shadows.splits[3],
@@ -1145,6 +1168,13 @@ namespace frost
 		const float* sceneView = _frame.view;
 		if (_shadows.rendered) { sceneView = _shadows.sceneView; }
 		bgfx::setUniform(_shadows.u_sceneView, sceneView);
+	}
+
+	static void bindShadows(const SunShadowTargets& _shadows, const SunShadowResource& _settings,
+		const RenderFrame& _frame, bool _enabled)
+	{
+		bgfx::setTexture(5, _shadows.sampler, _shadows.atlas);
+		bindShadowUniforms(_shadows, _settings, _frame, _enabled);
 	}
 
 	struct SunShadowSystem
@@ -2611,6 +2641,675 @@ namespace frost
 }
 
 
+// Software ray scene and glossy reflections
+namespace frost
+{
+	template<typename Ty>
+	struct RayBuildStorage
+	{
+		explicit RayBuildStorage(AllocatorI* _allocator) { data.setAllocator(_allocator); }
+		DynamicStorageT<Ty> data;
+		uint32_t count = 0;
+		Ty& add()
+		{
+			if (count == data.getCapacity()) { data.setCapacity(max(128u, count * 2), count); }
+			Ty& value = *data.getPtr(count++);
+			value = {};
+			return value;
+		}
+	};
+
+	struct RayNode
+	{
+		Vec3 minimum = InitZero;
+		uint32_t first;
+		Vec3 maximum = InitZero;
+		uint32_t count;
+	};
+
+	struct RayBuildItem { Aabb bounds; uint32_t index; };
+	struct RayVertex { float position[4]; float normal[4]; };
+	struct RayTriangle { uint32_t vertices[3]; uint32_t material; };
+	struct RayInstance { float inverse[3][4]; float info[4]; };
+	struct RayMaterial { float properties[4]; float samplers[4]; };
+	struct RayGeometry { const MeshGeometry* geometry; uint32_t root; };
+	struct RayLight { float data[8][4]; };
+
+	static float rayArea(const Aabb& _bounds)
+	{
+		const Vec3 size = max(sub(_bounds.max, _bounds.min), { 0, 0, 0 });
+		return size.x * size.y + size.x * size.z + size.y * size.z;
+	}
+
+	static void buildRayBvh(RayBuildItem* _items, uint32_t _begin, uint32_t _end,
+		RayBuildStorage<RayNode>& _nodes, uint32_t _node, bool _triangles, uint32_t _base = 0, uint32_t _depth = 0)
+	{
+		Aabb bounds = _items[_begin].bounds;
+		Aabb centers = { getCenter(bounds), getCenter(bounds) };
+		for (uint32_t ii = _begin + 1; ii < _end; ++ii)
+		{
+			bounds.min = min(bounds.min, _items[ii].bounds.min);
+			bounds.max = max(bounds.max, _items[ii].bounds.max);
+			const Vec3 center = getCenter(_items[ii].bounds);
+			centers.min = min(centers.min, center); centers.max = max(centers.max, center);
+		}
+		*_nodes.data.getPtr(_node) = { bounds.min, _triangles ? _base + _begin : _items[_begin].index, bounds.max, _end - _begin };
+		if (_end - _begin <= (_triangles ? 4u : 1u) || (_triangles && _depth == 48)) { return; }
+		const Vec3 size = sub(centers.max, centers.min);
+		const uint8_t axis = size.x > size.y ? (size.x > size.z ? 0 : 2) : (size.y > size.z ? 1 : 2);
+		const auto coordinate = [axis](const Vec3& _value) { return axis == 0 ? _value.x : (axis == 1 ? _value.y : _value.z); };
+		const float extent = coordinate(size);
+		uint32_t middle = (_begin + _end) / 2;
+		if (extent > 0.000001f && _depth < 24)
+		{
+			struct Bin { Aabb bounds = { { kFloatLargest, kFloatLargest, kFloatLargest }, { -kFloatLargest, -kFloatLargest, -kFloatLargest } }; uint32_t count = 0; };
+			Bin bins[8];
+			const float origin = coordinate(centers.min);
+			const auto binIndex = [&](const RayBuildItem& _item) { return min(7u, uint32_t(max(0.0f, (coordinate(getCenter(_item.bounds)) - origin) * 8.0f / extent))); };
+			for (uint32_t ii = _begin; ii < _end; ++ii)
+			{
+				Bin& bin = bins[binIndex(_items[ii])];
+				bin.bounds.min = min(bin.bounds.min, _items[ii].bounds.min);
+				bin.bounds.max = max(bin.bounds.max, _items[ii].bounds.max); ++bin.count;
+			}
+			float best = kFloatLargest;
+			uint32_t split = 0;
+			for (uint32_t candidate = 1; candidate < 8; ++candidate)
+			{
+				Bin left, right;
+				for (uint32_t ii = 0; ii < 8; ++ii)
+				{
+					if (bins[ii].count == 0) { continue; }
+					Bin& target = ii < candidate ? left : right;
+					target.bounds.min = min(target.bounds.min, bins[ii].bounds.min);
+					target.bounds.max = max(target.bounds.max, bins[ii].bounds.max); target.count += bins[ii].count;
+				}
+				if (left.count == 0 || right.count == 0) { continue; }
+				const float cost = rayArea(left.bounds) * left.count + rayArea(right.bounds) * right.count;
+				if (cost < best) { best = cost; split = candidate; }
+			}
+			if (split != 0)
+			{
+				middle = _begin;
+				for (uint32_t ii = _begin; ii < _end; ++ii)
+				{
+					if (binIndex(_items[ii]) < split) { swap(_items[ii], _items[middle++]); }
+				}
+			}
+		}
+		const uint32_t first = _nodes.count;
+		_nodes.add(); _nodes.add();
+		_nodes.data.getPtr(_node)->first = first;
+		_nodes.data.getPtr(_node)->count = 0;
+		buildRayBvh(_items, _begin, middle, _nodes, first, _triangles, _base, _depth + 1);
+		buildRayBvh(_items, middle, _end, _nodes, first + 1, _triangles, _base, _depth + 1);
+	}
+
+	static bgfx::VertexBufferHandle createRayBuffer(const void* _data, uint32_t _size)
+	{
+		bgfx::VertexLayout layout;
+		layout.begin().add(bgfx::Attrib::TexCoord0, 4, bgfx::AttribType::Float).end();
+		const float empty[4] = {};
+		const auto buffer = bgfx::createVertexBuffer(bgfx::copy(_size > 0 ? _data : empty, max(16u, _size)), layout, BGFX_BUFFER_COMPUTE_READ);
+		FROST_ASSERT(bgfx::isValid(buffer), "Unable to create ray scene buffer.");
+		return buffer;
+	}
+
+	struct ReflectionResource
+	{
+		enum Program : uint8_t { MaterialProgram, TraceProgram, FilterProgram, ShadeProgram, ResolveProgram, PrepareProgram, CaptureProgram, PrefilterProgram, ProgramCount };
+		enum Sampler : uint8_t { BaseColorSampler, ParameterSampler, EmissiveSampler, EnvironmentSampler, ReflectionSampler, SurfaceSampler, GuideSampler, CaptureSampler, ProbeSampler, VisibilitySampler, SamplerCount };
+		enum Uniform : uint8_t { Scene, Bake, MaterialLod, Trace, Environment, Filter, Projection, Screen, Resolve, Probes, UniformCount };
+		ReflectionResource() = default;
+		ReflectionResource(ReflectionResource&& _other)
+		{
+			lights = frost::move(_other.lights);
+			memCopy(buffers, _other.buffers, sizeof(buffers));
+			memCopy(programs, _other.programs, sizeof(programs));
+			memCopy(samplers, _other.samplers, sizeof(samplers));
+			memCopy(uniforms, _other.uniforms, sizeof(uniforms));
+			memCopy(materials, _other.materials, sizeof(materials));
+			memCopy(probes, _other.probes, sizeof(probes));
+			probeSource = _other.probeSource; probeRadiance = _other.probeRadiance; probeVisibility = _other.probeVisibility; probeCount = _other.probeCount;
+			lightBuffer = _other.lightBuffer; emptyEnvironment = _other.emptyEnvironment; emptyPoint = _other.emptyPoint;
+			hits = _other.hits; mirror = _other.mirror; filtered = _other.filtered; surface = _other.surface; guides = _other.guides;
+			width = _other.width; height = _other.height; mips = _other.mips;
+			instances = _other.instances; built = _other.built; lightCapacity = _other.lightCapacity;
+		}
+		DynamicStorageT<RayLight> lights;
+		bgfx::VertexBufferHandle buffers[6] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE,
+			BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+		bgfx::DynamicVertexBufferHandle lightBuffer = BGFX_INVALID_HANDLE;
+		bgfx::ProgramHandle programs[ProgramCount] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE,
+			BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+		bgfx::UniformHandle samplers[SamplerCount] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE,
+			BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+		bgfx::UniformHandle uniforms[UniformCount] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE,
+			BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+		bgfx::TextureHandle materials[3] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+		bgfx::TextureHandle emptyEnvironment = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle emptyPoint = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle hits = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle mirror = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle filtered = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle surface = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle guides = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle probeSource = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle probeRadiance = BGFX_INVALID_HANDLE;
+		bgfx::TextureHandle probeVisibility = BGFX_INVALID_HANDLE;
+		float probes[3][4] = {};
+		uint16_t probeCount = 0;
+		uint32_t instances = 0;
+		uint32_t lightCapacity = 0;
+		uint16_t width = 0, height = 0;
+		uint8_t mips = 0;
+		bool built = false;
+	};
+
+	struct ReflectionSystem
+	{
+		static void startup(World& _world, ResMutT<ReflectionResource> _reflection)
+		{
+			_reflection->lights.setAllocator(_world.getAllocator());
+			const char* compute[] = { "cs_reflection_material", "cs_reflection_trace", "cs_reflection_filter", "cs_reflection_shade" };
+			for (uint8_t ii = 0; ii < 4; ++ii)
+			{
+				_reflection->programs[ii] = bgfx::createProgram(bgfx::createEmbeddedShader(s_embeddedShaders, bgfx::getRendererType(), compute[ii]), true);
+				FROST_ASSERT(bgfx::isValid(_reflection->programs[ii]), "Failed to create %s.", compute[ii]);
+			}
+			_reflection->programs[ReflectionResource::ResolveProgram] = createProgram("vs_deferred_light", "fs_reflection");
+			const char* captures[] = { "cs_reflection_prepare", "cs_reflection_capture", "cs_reflection_prefilter" };
+			for (uint8_t ii = 0; ii < FROST_COUNTOF(captures); ++ii)
+			{
+				_reflection->programs[ReflectionResource::PrepareProgram + ii] = bgfx::createProgram(bgfx::createEmbeddedShader(
+					s_embeddedShaders, bgfx::getRendererType(), captures[ii]), true);
+				FROST_ASSERT(bgfx::isValid(_reflection->programs[ReflectionResource::PrepareProgram + ii]), "Failed to create %s.", captures[ii]);
+			}
+			const char* samplers[] = { "s_rayBaseColor", "s_rayParameters", "s_rayEmissive", "s_rayEnvironment", "s_reflection",
+				"s_reflectionSurface", "s_reflectionGuide", "s_reflectionCapture", "s_reflectionProbes", "s_reflectionVisibility" };
+			for (uint8_t ii = 0; ii < FROST_COUNTOF(samplers); ++ii) { _reflection->samplers[ii] = bgfx::createUniform(samplers[ii], bgfx::UniformType::Sampler); }
+			const char* uniforms[] = { "u_rayScene", "u_rayBake", "u_rayMaterialLod", "u_reflectionTrace", "u_rayEnvironment",
+				"u_reflectionFilter", "u_reflectionProjection", "u_reflectionScreen", "u_reflectionResolve", "u_reflectionProbes" };
+			for (uint8_t ii = 0; ii < FROST_COUNTOF(uniforms); ++ii) { _reflection->uniforms[ii] = bgfx::createUniform(uniforms[ii], bgfx::UniformType::Vec4, ii == ReflectionResource::Probes ? 3 : 1); }
+			for (auto& buffer : _reflection->buffers) { buffer = createRayBuffer(NULL, 0); }
+			for (uint8_t ii = 0; ii < 3; ++ii)
+			{
+				_reflection->materials[ii] = bgfx::createTexture2D(1, 1, false, 2, ii == 2 ? bgfx::TextureFormat::RGBA16F : bgfx::TextureFormat::RGBA8, BGFX_TEXTURE_COMPUTE_WRITE);
+			}
+			const uint8_t black[48] = {};
+			_reflection->emptyEnvironment = bgfx::createTextureCube(1, false, 1, bgfx::TextureFormat::RGBA16F, 0, bgfx::copy(black, sizeof(black)));
+			_reflection->emptyPoint = bgfx::createTextureCube(1, false, 2, bgfx::TextureFormat::R32F, 0, bgfx::copy(black, sizeof(black)));
+			bgfx::setViewName(kRenderPassRayMaterials, "Ray materials (startup)");
+			bgfx::setViewName(kRenderPassReflectionCapture, "Reflection captures");
+			bgfx::setViewName(kRenderPassReflectionPrefilter, "Reflection prefilter");
+			bgfx::setViewMode(kRenderPassReflectionPrefilter, bgfx::ViewMode::Sequential);
+			bgfx::setViewName(kRenderPassReflectionPrepare, "Reflection surfaces");
+			bgfx::setViewName(kRenderPassReflectionTrace, "Reflection trace");
+			bgfx::setViewName(kRenderPassReflectionShade, "Reflection shade");
+			bgfx::setViewName(kRenderPassReflectionFilter, "Reflection filter");
+			bgfx::setViewName(kRenderPassReflection, "Glossy reflection");
+			bgfx::setViewMode(kRenderPassReflectionFilter, bgfx::ViewMode::Sequential);
+		}
+
+		static uint32_t readGeometry(const MeshGeometry& _geometry, RayBuildStorage<RayVertex>& _vertices,
+			RayBuildStorage<RayTriangle>& _triangles, RayBuildStorage<RayNode>& _nodes, AllocatorI* _allocator)
+		{
+			MemoryReader reader(_geometry.data->data, _geometry.data->size);
+			Error err;
+			const uint32_t begin = _triangles.count;
+			for (uint16_t lod = 0; lod < _geometry.numLods; ++lod)
+			{
+				uint32_t groups = 0;
+				readHE(&reader, groups, true, &err);
+				for (uint32_t group = 0; group < groups; ++group)
+				{
+					MeshBounds bounds;
+					bgfx::VertexLayout layout;
+					readMeshBounds(reader, bounds, &err); readMeshLayout(reader, layout, &err);
+					uint32_t vertices = 0, indices = 0, flags = 0;
+					uint16_t slot = 0, primitives = 0;
+					readHE(&reader, vertices, true, &err); readHE(&reader, indices, true, &err); readHE(&reader, flags, true, &err);
+					readHE(&reader, slot, true, &err); readHE(&reader, primitives, true, &err);
+					const uint16_t indexSize = 0 != (flags & MeshFormat::Index32) ? 4 : 2;
+					const bool selected = lod + 1 == _geometry.numLods;
+					const Memory* vertexData = NULL;
+					const Memory* indexData = NULL;
+					const uint32_t vertexBase = _vertices.count;
+					if (selected)
+					{
+						vertexData = readMeshBuffer(reader, vertices * layout.getStride(), 0 != (flags & MeshFormat::VertexCompressed), true, vertices, layout.getStride(), &err);
+						indexData = readMeshBuffer(reader, indices * indexSize, 0 != (flags & MeshFormat::IndexCompressed), false, indices, indexSize, &err);
+						FROST_ASSERT(err.isOk() && NULL != vertexData && NULL != indexData, "Unable to decode ray geometry.");
+#if FROST_CPU_ENDIAN_BIG
+						swapMeshVertices(vertexData->data, vertices, layout);
+#endif
+						for (uint32_t ii = 0; ii < vertices; ++ii)
+						{
+							RayVertex& vertex = _vertices.add();
+							float uv[4];
+							bgfx::vertexUnpack(vertex.position, bgfx::Attrib::Position, layout, vertexData->data, ii);
+							bgfx::vertexUnpack(vertex.normal, bgfx::Attrib::Normal, layout, vertexData->data, ii);
+							bgfx::vertexUnpack(uv, bgfx::Attrib::TexCoord0, layout, vertexData->data, ii);
+							vertex.position[3] = uv[0]; vertex.normal[3] = uv[1];
+						}
+					}
+					else
+					{
+						for (uint8_t ii = 0; ii < 2; ++ii)
+						{
+							uint32_t size = 0; readHE(&reader, size, true, &err); skip(&reader, size);
+						}
+					}
+					for (uint16_t pp = 0; pp < primitives; ++pp)
+					{
+						char* name = readMeshString(reader, &err); free(_allocator, name);
+						uint32_t first = 0, count = 0, firstVertex = 0, vertexCount = 0;
+						readHE(&reader, first, true, &err); readHE(&reader, count, true, &err);
+						readHE(&reader, firstVertex, true, &err); readHE(&reader, vertexCount, true, &err);
+						readMeshBounds(reader, bounds, &err);
+						if (!selected) { continue; }
+						for (uint32_t ii = first; ii < first + count; ii += 3)
+						{
+							RayTriangle& triangle = _triangles.add();
+							triangle.material = slot;
+							for (uint8_t jj = 0; jj < 3; ++jj)
+							{
+								const uint8_t* data = (const uint8_t*)indexData->data + (ii + jj) * indexSize;
+								uint32_t index = 0;
+								if (indexSize == 2) { uint16_t value; memCopy(&value, data, 2); index = 0 != (flags & MeshFormat::IndexCompressed) ? value : toHostEndian(value, true); }
+								else { memCopy(&index, data, 4); if (0 == (flags & MeshFormat::IndexCompressed)) { index = toHostEndian(index, true); } }
+								triangle.vertices[jj] = vertexBase + index;
+							}
+						}
+					}
+					release(vertexData); release(indexData);
+					FROST_ASSERT(err.isOk(), "Unable to parse ray geometry.");
+				}
+			}
+			RayBuildStorage<RayBuildItem> items(_allocator);
+			for (uint32_t ii = begin; ii < _triangles.count; ++ii)
+			{
+				const RayTriangle& triangle = *_triangles.data.getPtr(ii);
+				const float* a = _vertices.data.getPtr(triangle.vertices[0])->position;
+				const float* b = _vertices.data.getPtr(triangle.vertices[1])->position;
+				const float* c = _vertices.data.getPtr(triangle.vertices[2])->position;
+				const Vec3 va = { a[0], a[1], a[2] }, vb = { b[0], b[1], b[2] }, vc = { c[0], c[1], c[2] };
+				items.add() = { { min(va, min(vb, vc)), max(va, max(vb, vc)) }, ii };
+			}
+			FROST_ASSERT(items.count > 0, "Ray geometry requires triangles.");
+			const uint32_t root = _nodes.count; _nodes.add();
+			buildRayBvh(items.data.getPtr(), 0, items.count, _nodes, root, true, begin);
+			RayBuildStorage<RayTriangle> sorted(_allocator);
+			for (uint32_t ii = 0; ii < items.count; ++ii) { sorted.add() = *_triangles.data.getPtr(items.data.getPtr(ii)->index); }
+			memCopy(_triangles.data.getPtr(begin), sorted.data.getPtr(), sorted.count * sizeof(RayTriangle));
+			return root;
+		}
+
+		static void build(ReflectionResource& _reflection, const MeshRenderResource& _meshes, const GBufferResource& _gbuffer, AllocatorI* _allocator)
+		{
+			RayBuildStorage<RayGeometry> geometries(_allocator);
+			RayBuildStorage<RayVertex> vertices(_allocator);
+			RayBuildStorage<RayTriangle> triangles(_allocator);
+			RayBuildStorage<RayNode> nodes(_allocator), tree(_allocator);
+			RayBuildStorage<RayInstance> instances(_allocator);
+			RayBuildStorage<RayMaterial> materials(_allocator);
+			RayBuildStorage<const MaterialCreate*> sources(_allocator);
+			RayBuildStorage<RayBuildItem> items(_allocator);
+			for (uint32_t ii = 0; ii < _meshes.count; ++ii)
+			{
+				const MeshRenderItem& item = *_meshes.items.getPtr(ii);
+				const Vec3 x = { item.model[0], item.model[1], item.model[2] };
+				const Vec3 y = { item.model[4], item.model[5], item.model[6] };
+				const Vec3 z = { item.model[8], item.model[9], item.model[10] };
+				if (abs(dot(cross(x, y), z)) < 1e-12f) { continue; }
+				uint32_t geometry = 0;
+				for (; geometry < geometries.count; ++geometry) { if (geometries.data.getPtr(geometry)->geometry == item.mesh->geometry) { break; } }
+				if (geometry == geometries.count)
+				{
+					const uint32_t root = readGeometry(*item.mesh->geometry, vertices, triangles, nodes, _allocator);
+					geometries.add() = { item.mesh->geometry, root };
+				}
+				const uint32_t root = geometries.data.getPtr(geometry)->root;
+				float inverse[16]; mtxInverse(inverse, item.model);
+				RayInstance& instance = instances.add();
+				for (uint8_t row = 0; row < 3; ++row)
+				{
+					for (uint8_t column = 0; column < 4; ++column) { instance.inverse[row][column] = inverse[row + column * 4]; }
+				}
+				instance.info[0] = float(root); instance.info[1] = float(materials.count); instance.info[2] = item.instance.castShadows ? 1.0f : 0.0f;
+				for (uint16_t slot = 0; slot < item.mesh->numMaterials; ++slot)
+				{
+					const MaterialCreate* material = &getMeshMaterial(item.instance, *item.mesh, slot);
+					uint32_t layer = 0;
+					for (; layer < sources.count; ++layer) { if (*sources.data.getPtr(layer) == material) { break; } }
+					if (layer == sources.count) { sources.add() = material; }
+					RayMaterial& entry = materials.add();
+					entry.properties[0] = float(layer);
+					entry.properties[1] = isMaterialMasked(*material) ? material->alphaCutoff : -1.0f;
+					entry.properties[2] = 0 != (material->flags & MaterialFlags::DoubleSided) ? 1.0f : 0.0f;
+					entry.samplers[ReflectionResource::BaseColorSampler] = float(material->samplers[MaterialTexture::BaseColor]);
+					entry.samplers[ReflectionResource::ParameterSampler] = float(material->samplers[MaterialTexture::MetallicRoughness]);
+					entry.samplers[ReflectionResource::EmissiveSampler] = float(material->samplers[MaterialTexture::Emissive]);
+				}
+				const RayNode& bounds = *nodes.data.getPtr(root);
+				items.add() = { transformBounds({ bounds.minimum, bounds.maximum }, item.model), instances.count - 1 };
+			}
+			if (items.count > 0) { tree.add(); buildRayBvh(items.data.getPtr(), 0, items.count, tree, 0, false); }
+			const void* data[] = { tree.data.getPtr(), nodes.data.getPtr(), vertices.data.getPtr(), triangles.data.getPtr(), instances.data.getPtr(), materials.data.getPtr() };
+			const uint32_t sizes[] = { tree.count * uint32_t(sizeof(RayNode)), nodes.count * uint32_t(sizeof(RayNode)),
+				vertices.count * uint32_t(sizeof(RayVertex)), triangles.count * uint32_t(sizeof(RayTriangle)),
+				instances.count * uint32_t(sizeof(RayInstance)), materials.count * uint32_t(sizeof(RayMaterial)) };
+			for (uint8_t ii = 0; ii < FROST_COUNTOF(data); ++ii)
+			{
+				bgfx::destroy(_reflection.buffers[ii]); _reflection.buffers[ii] = createRayBuffer(data[ii], sizes[ii]);
+			}
+			FROST_ASSERT(sources.count <= bgfx::getCaps()->limits.maxTextureLayers, "Ray materials exceed texture array capacity.");
+			const uint64_t flags = BGFX_TEXTURE_COMPUTE_WRITE | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP | BGFX_SAMPLER_W_CLAMP;
+			for (uint8_t ii = 0; ii < 3; ++ii)
+			{
+				bgfx::destroy(_reflection.materials[ii]);
+				_reflection.materials[ii] = bgfx::createTexture2D(128, 128, false, uint16_t(max(2u, sources.count)),
+					ii == 2 ? bgfx::TextureFormat::RGBA16F : bgfx::TextureFormat::RGBA8, flags);
+				FROST_ASSERT(bgfx::isValid(_reflection.materials[ii]), "Unable to create ray material array.");
+			}
+			for (uint32_t ii = 0; ii < sources.count; ++ii)
+			{
+				const MaterialCreate& material = **sources.data.getPtr(ii);
+				const uint8_t maps[] = { MaterialTexture::BaseColor, MaterialTexture::MetallicRoughness, MaterialTexture::Emissive };
+				float lod[4] = {};
+				for (uint8_t jj = 0; jj < 3; ++jj)
+				{
+					const TextureRef* texture = getTextureRef(material.textures[maps[jj]]);
+					bgfx::setTexture(8 + jj, _gbuffer.material.samplers[maps[jj]], NULL != texture ? texture->texture : s_textureContext->white);
+					if (NULL != texture) { lod[jj] = max(0.0f, log2(float(max(texture->info.width, texture->info.height)) / 128.0f)); }
+					bgfx::setImage(jj, _reflection.materials[jj], 0, uint16_t(max(2u, sources.count)), 0, bgfx::Access::Write);
+				}
+				const float parameters[] = { material.metallic, material.roughness, 0.0f, 0.0f };
+				const float emissive[] = { material.emissive.x * material.emissiveStrength, material.emissive.y * material.emissiveStrength, material.emissive.z * material.emissiveStrength, 0.0f };
+				const float bake[] = { float(ii), 128.0f, 0.0f, 0.0f };
+				bgfx::setUniform(_gbuffer.material.u_materialBaseColor, material.baseColor);
+				bgfx::setUniform(_gbuffer.material.u_materialParameters, parameters);
+				bgfx::setUniform(_gbuffer.material.u_materialEmissive, emissive);
+				bgfx::setUniform(_reflection.uniforms[ReflectionResource::Bake], bake); bgfx::setUniform(_reflection.uniforms[ReflectionResource::MaterialLod], lod);
+				bgfx::dispatch(kRenderPassRayMaterials, _reflection.programs[ReflectionResource::MaterialProgram], 16, 16);
+			}
+			FROST_ASSERT(instances.count < (1u << 24) && materials.count < (1u << 24) && triangles.count < (1u << 24) && nodes.count < (1u << 24), "Ray scene indices exceed float metadata precision.");
+			_reflection.instances = instances.count;
+			_reflection.built = true;
+		}
+
+		static void createCaptures(ReflectionResource& _reflection, const MeshRenderResource& _meshes)
+		{
+			const bgfx::TextureHandle textures[] = { _reflection.probeSource, _reflection.probeRadiance, _reflection.probeVisibility };
+			for (auto texture : textures) { if (bgfx::isValid(texture)) { bgfx::destroy(texture); } }
+			// Fixed world-space captures serve broad specular lobes independently of the camera.
+			const Aabb bounds = _meshes.count > 0 ? _meshes.nodes.getPtr()->bounds : Aabb{ { -1, -1, -1 }, { 1, 1, 1 } };
+			const Vec3 size = sub(bounds.max, bounds.min);
+			float extent[3]; store(extent, size);
+			float origin[3]; store(origin, bounds.min);
+			const uint16_t maximum[] = { 8, 4, 8 };
+			uint16_t dimensions[3];
+			for (uint8_t ii = 0; ii < 3; ++ii) { dimensions[ii] = uint16_t(clamp(uint32_t(ceil(extent[ii] / 4.0f)) + 1, 2u, uint32_t(maximum[ii]))); }
+			const uint32_t capacity = bgfx::getCaps()->limits.maxTextureLayers / 6;
+			FROST_ASSERT(capacity >= 8, "Reflection captures require at least 48 texture array layers.");
+			while (uint32_t(dimensions[0]) * dimensions[1] * dimensions[2] > capacity)
+			{
+				uint8_t axis = dimensions[1] > dimensions[0] ? 1 : 0;
+				if (dimensions[2] > dimensions[axis]) { axis = 2; }
+				--dimensions[axis];
+			}
+			_reflection.probeCount = dimensions[0] * dimensions[1] * dimensions[2];
+			for (uint8_t ii = 0; ii < 3; ++ii)
+			{
+				_reflection.probes[0][ii] = origin[ii] - max(0.0f, 1.0f - extent[ii]) * 0.5f;
+				_reflection.probes[1][ii] = max(1.0f, extent[ii]) / float(dimensions[ii] - 1);
+				_reflection.probes[2][ii] = float(dimensions[ii]);
+			}
+			_reflection.probes[0][3] = 8.0f;
+			_reflection.probes[1][3] = 3.0f;
+			const uint64_t flags = BGFX_TEXTURE_COMPUTE_WRITE | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP | BGFX_SAMPLER_W_CLAMP;
+			_reflection.probeSource = bgfx::createTextureCube(8, false, _reflection.probeCount, bgfx::TextureFormat::RGBA16F, flags);
+			_reflection.probeRadiance = bgfx::createTextureCube(8, true, _reflection.probeCount, bgfx::TextureFormat::RGBA16F, flags);
+			_reflection.probeVisibility = bgfx::createTextureCube(8, false, _reflection.probeCount, bgfx::TextureFormat::RGBA32F, flags);
+			FROST_ASSERT(bgfx::isValid(_reflection.probeSource) && bgfx::isValid(_reflection.probeRadiance)
+				&& bgfx::isValid(_reflection.probeVisibility), "Unable to create local reflection captures.");
+			bgfx::setName(_reflection.probeSource, "Reflection - local radiance captures");
+			bgfx::setName(_reflection.probeRadiance, "Reflection - local GGX mip chains");
+			bgfx::setName(_reflection.probeVisibility, "Reflection - local distance moments");
+		}
+
+		static void destroyTargets(ReflectionResource& _reflection)
+		{
+			if (bgfx::isValid(_reflection.hits)) { bgfx::destroy(_reflection.hits); }
+			if (bgfx::isValid(_reflection.mirror)) { bgfx::destroy(_reflection.mirror); }
+			if (bgfx::isValid(_reflection.filtered)) { bgfx::destroy(_reflection.filtered); }
+			if (bgfx::isValid(_reflection.surface)) { bgfx::destroy(_reflection.surface); }
+			if (bgfx::isValid(_reflection.guides)) { bgfx::destroy(_reflection.guides); }
+			_reflection.hits = _reflection.mirror = _reflection.filtered = _reflection.surface = _reflection.guides = BGFX_INVALID_HANDLE;
+		}
+
+		static void bindScene(const ReflectionResource& _reflection, const RenderFrame& _frame,
+			const GBufferResource& _gbuffer, const LightResource& _light, const EnvironmentResource& _environment, uint32_t _count, bool _capture = false)
+		{
+			bgfx::setUniform(_light.u_invSceneViewProj, _frame.inverseViewProjection);
+			bgfx::setUniform(_light.u_sceneCamera, _frame.cameraPosition);
+			bgfx::setUniform(_light.u_sceneDirection, _frame.cameraDirection);
+			for (uint8_t ii = 0; ii < 6; ++ii) { bgfx::setBuffer(2 + ii, _reflection.buffers[ii], bgfx::Access::Read); }
+			bgfx::setBuffer(8, _reflection.lightBuffer, bgfx::Access::Read);
+			for (uint8_t ii = 0; ii < 3; ++ii)
+			{
+				bgfx::setTexture(9 + ii, _reflection.samplers[ii], _reflection.materials[ii]);
+			}
+			bgfx::setTexture(_capture ? 13 : 12, _reflection.samplers[ReflectionResource::EnvironmentSampler], _environment.active ? _environment.specular : _reflection.emptyEnvironment);
+			if (!_capture)
+			{
+				bgfx::setTexture(13, _reflection.samplers[ReflectionResource::SurfaceSampler], _reflection.surface);
+				bgfx::setTexture(14, _light.s_depth, _gbuffer.textures[2]);
+				bgfx::setTexture(15, _light.s_material, _gbuffer.textures[3]);
+			}
+			const float scene[] = { float(_reflection.instances), 128.0f, 0.002f, 0.0f };
+			const float trace[] = { float(_frame.width), float(_frame.height), float((_frame.height + 1) / 2), float(_count) };
+			const float black[4] = {};
+			bgfx::setUniform(_reflection.uniforms[ReflectionResource::Scene], scene); bgfx::setUniform(_reflection.uniforms[ReflectionResource::Trace], trace);
+			bgfx::setUniform(_reflection.uniforms[ReflectionResource::Environment], _environment.active ? _environment.luminance : black);
+		}
+
+		static void update(World& _world, ResT<RenderFrame> _frame, ResT<MeshRenderResource> _meshes,
+			ResT<GBufferResource> _gbuffer, ResT<LightResource> _light, ResT<EnvironmentResource> _environment,
+			ResMutT<ReflectionResource> _reflection, ResT<LocalLightResource> _local, ResT<LocalShadowResource> _localSettings,
+			ResT<SunShadowTargets> _shadows, ResT<SunShadowResource> _shadowSettings,
+			QueryT<Entity, const DirectionalLightComponent&> _directional,
+			QueryT<Entity, const PointLightComponent&, OptionalT<const TransformComponent>> _points,
+			QueryT<Entity, const SpotLightComponent&, OptionalT<const TransformComponent>> _spots,
+			QueryT<Entity, const RectLightComponent&, OptionalT<const TransformComponent>> _rects)
+		{
+			if (!_frame->active) { return; }
+			// Freeze geometry and materials on the first populated frame after scene startup.
+			if (!_reflection->built && _meshes->count > 0)
+			{
+				build(*_reflection, *_meshes, *_gbuffer, _world.getAllocator());
+				createCaptures(*_reflection, *_meshes);
+			}
+			if (!bgfx::isValid(_reflection->probeSource)) { createCaptures(*_reflection, *_meshes); }
+			if (_reflection->width != _frame->width || _reflection->height != _frame->height)
+			{
+				destroyTargets(*_reflection);
+				const uint64_t flags = BGFX_TEXTURE_COMPUTE_WRITE | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP
+					| BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_MIP_POINT;
+				_reflection->hits = bgfx::createTexture2D(_frame->width, (_frame->height + 1) / 2, false, 1, bgfx::TextureFormat::RGBA32F, flags);
+				_reflection->mirror = bgfx::createTexture2D(_frame->width, (_frame->height + 1) / 2, false, 1, bgfx::TextureFormat::RGBA16F, flags);
+				_reflection->filtered = bgfx::createTexture2D(_frame->width, _frame->height, true, 1, bgfx::TextureFormat::RGBA16F, flags);
+				_reflection->surface = bgfx::createTexture2D(_frame->width, _frame->height, false, 1, bgfx::TextureFormat::RGBA16F, flags);
+				_reflection->guides = bgfx::createTexture2D(_frame->width, _frame->height, true, 1, bgfx::TextureFormat::RGBA16F, flags);
+				FROST_ASSERT(bgfx::isValid(_reflection->hits) && bgfx::isValid(_reflection->mirror) && bgfx::isValid(_reflection->filtered)
+					&& bgfx::isValid(_reflection->surface) && bgfx::isValid(_reflection->guides), "Unable to create reflection targets.");
+				bgfx::setName(_reflection->hits, "Reflection - closest hits");
+				bgfx::setName(_reflection->mirror, "Reflection - mirror radiance and distance");
+				bgfx::setName(_reflection->filtered, "Reflection - spatial roughness mip chain");
+				bgfx::setName(_reflection->surface, "Reflection - shading and geometric normals");
+				bgfx::setName(_reflection->guides, "Reflection - surface planes and coverage");
+				_reflection->width = _frame->width; _reflection->height = _frame->height;
+				_reflection->mips = 1;
+				for (uint16_t size = max(_frame->width, _frame->height); size > 1; size >>= 1) { ++_reflection->mips; }
+			}
+			// Light visibility is evaluated at ray hits, independently of the camera frustum.
+			LocalLightResource local;
+			local.lights.setAllocator(_world.getAllocator());
+			RenderFrame all = *_frame;
+			for (Plane& plane : all.frustum) { plane.normal = { 0, 0, 0 }; plane.dist = 0; }
+			_points.each([&](Entity _entity, const PointLightComponent& _component, const TransformComponent* _transform)
+			{
+				LocalLightSystem::append(_world, local, all, _entity, _component, _transform, 0.0f);
+			});
+			_spots.each([&](Entity _entity, const SpotLightComponent& _component, const TransformComponent* _transform)
+			{
+				if (auto* light = LocalLightSystem::append(_world, local, all, _entity, _component, _transform, 1.0f))
+				{
+					light->data[2][3] = cos(toRad(clamp(_component.outerAngle, 0.1f, 89.0f)));
+					light->data[5][0] = cos(toRad(clamp(_component.innerAngle, 0.0f, clamp(_component.outerAngle, 0.1f, 89.0f))));
+				}
+			});
+			_rects.each([&](Entity _entity, const RectLightComponent& _component, const TransformComponent* _transform)
+			{
+				if (auto* light = LocalLightSystem::append(_world, local, all, _entity, _component, _transform, 2.0f))
+				{
+					light->data[3][3] = max(0.001f, _component.width) * 0.5f; light->data[4][3] = max(0.001f, _component.height) * 0.5f;
+					light->data[5][2] = _component.twoSided ? 1.0f : 0.0f;
+				}
+			});
+			uint32_t count = local.count;
+			_reflection->lights.setCapacity(count + _directional.getCount(), 0);
+			for (uint32_t ii = 0; ii < local.count; ++ii)
+			{
+				RayLight& light = *_reflection->lights.getPtr(ii);
+				memCopy(light.data, local.lights.getPtr(ii)->data, sizeof(light.data));
+				light.data[7][0] = local.lights.getPtr(ii)->castShadows ? 1.0f : 0.0f;
+				light.data[7][2] = local.lights.getPtr(ii)->isStatic ? 1.0f : 0.0f;
+				light.data[6][0] = -1.0f;
+				// Cube shadows cover their full light volume, including off-screen ray hits.
+				if (light.data[1][3] == 1.0f) { continue; }
+				for (uint32_t jj = 0; jj < _local->count; ++jj)
+				{
+					const LocalLight& source = *_local->lights.getPtr(jj);
+					if (source.entity != local.lights.getPtr(ii)->entity || source.slot < 0) { continue; }
+					light.data[6][0] = float(source.slot);
+					light.data[6][1] = max(0.0f, _localSettings->depthBias);
+					light.data[6][2] = max(0.0f, _localSettings->normalBias);
+					light.data[6][3] = 1.0f / float(_local->resolution);
+					break;
+				}
+			}
+			_directional.each([&](Entity _entity, const DirectionalLightComponent& _component)
+			{
+				if (_component.intensity <= 0.0f || dot(_component.direction, _component.direction) <= 0.0f) { return; }
+				RayLight& light = *_reflection->lights.getPtr(count++);
+				light = {};
+				store(light.data[0], normalize(_component.direction));
+				store(light.data[1], mul(max(_component.color, { 0, 0, 0 }), _component.intensity));
+				light.data[1][3] = -1.0f; light.data[6][0] = -1.0f; light.data[7][0] = 1.0f;
+				light.data[7][1] = _entity == _shadows->light ? 1.0f : 0.0f;
+			});
+			if (_reflection->lightCapacity < max(1u, count))
+			{
+				if (bgfx::isValid(_reflection->lightBuffer)) { bgfx::destroy(_reflection->lightBuffer); }
+				_reflection->lightCapacity = max(32u, count);
+				bgfx::VertexLayout layout; layout.begin().add(bgfx::Attrib::TexCoord0, 4, bgfx::AttribType::Float).end();
+				_reflection->lightBuffer = bgfx::createDynamicVertexBuffer(_reflection->lightCapacity * 8, layout, BGFX_BUFFER_COMPUTE_READ);
+			}
+			if (count > 0) { bgfx::update(_reflection->lightBuffer, 0, bgfx::copy(_reflection->lights.getPtr(), count * sizeof(RayLight))); }
+			_reflection->probes[2][3] = float(count);
+			bindScene(*_reflection, *_frame, *_gbuffer, *_light, *_environment, count, true);
+			bgfx::setUniform(_reflection->uniforms[ReflectionResource::Probes], _reflection->probes, 3);
+			bgfx::setTexture(1, _local->pointSampler, bgfx::isValid(_local->pointDepth) ? _local->pointDepth : _reflection->emptyPoint);
+			bgfx::setImage(0, _reflection->probeSource, 0, _reflection->probeCount * 6, 0, bgfx::Access::Write);
+			bgfx::setImage(15, _reflection->probeVisibility, 0, _reflection->probeCount * 6, 0, bgfx::Access::Write);
+			bgfx::dispatch(kRenderPassReflectionCapture, _reflection->programs[ReflectionResource::CaptureProgram], 1, 1, _reflection->probeCount * 6);
+			for (uint8_t mip = 0; mip < 4; ++mip)
+			{
+				const float filter[] = { float(8 >> mip), float(mip) / 3.0f, 0.0f, 0.0f };
+				bgfx::setUniform(_reflection->uniforms[ReflectionResource::Filter], filter);
+				bgfx::setTexture(1, _reflection->samplers[ReflectionResource::CaptureSampler], _reflection->probeSource);
+				bgfx::setImage(0, _reflection->probeRadiance, 0, _reflection->probeCount * 6, mip, bgfx::Access::Write);
+				bgfx::dispatch(kRenderPassReflectionPrefilter, _reflection->programs[ReflectionResource::PrefilterProgram], 1, 1, _reflection->probeCount * 6);
+			}
+			const float screen[] = { float(_frame->width), float(_frame->height), abs(_frame->projection[5]) * _frame->height * 0.5f, 0.0f };
+			bgfx::setUniform(_light->u_invSceneViewProj, _frame->inverseViewProjection);
+			bgfx::setUniform(_light->u_sceneCamera, _frame->cameraPosition);
+			bgfx::setUniform(_light->u_sceneDirection, _frame->cameraDirection);
+			bgfx::setUniform(_reflection->uniforms[ReflectionResource::Screen], screen);
+			bgfx::setTexture(1, _light->s_normal, _gbuffer->textures[1]);
+			bgfx::setTexture(2, _light->s_depth, _gbuffer->textures[2]);
+			bgfx::setTexture(3, _light->s_material, _gbuffer->textures[3]);
+			bgfx::setImage(0, _reflection->surface, 0, bgfx::Access::Write);
+			bgfx::dispatch(kRenderPassReflectionPrepare, _reflection->programs[ReflectionResource::PrepareProgram], (_frame->width + 7) / 8, (_frame->height + 7) / 8);
+			bindScene(*_reflection, *_frame, *_gbuffer, *_light, *_environment, count);
+			bgfx::setImage(0, _reflection->hits, 0, bgfx::Access::Write);
+			bgfx::setImage(1, _reflection->mirror, 0, bgfx::Access::Write);
+			bgfx::dispatch(kRenderPassReflectionTrace, _reflection->programs[ReflectionResource::TraceProgram], (_frame->width + 7) / 8, ((_frame->height + 1) / 2 + 7) / 8);
+			bindScene(*_reflection, *_frame, *_gbuffer, *_light, *_environment, count);
+			bgfx::setImage(0, _reflection->mirror, 0, bgfx::Access::Write);
+			bgfx::setImage(15, _reflection->hits, 0, bgfx::Access::Read);
+			bindShadowUniforms(*_shadows, *_shadowSettings, *_frame, true);
+			bgfx::setTexture(12, _shadows->sampler, _shadows->atlas);
+			bgfx::setTexture(1, _local->pointSampler, bgfx::isValid(_local->pointDepth) ? _local->pointDepth : _reflection->emptyPoint);
+			bgfx::dispatch(kRenderPassReflectionShade, _reflection->programs[ReflectionResource::ShadeProgram], (_frame->width + 7) / 8, ((_frame->height + 1) / 2 + 7) / 8);
+			uint16_t width = _frame->width, height = _frame->height;
+			uint16_t sourceWidth = width, sourceHeight = (height + 1) / 2;
+			for (uint8_t mip = 0; mip < _reflection->mips; ++mip)
+			{
+				const float filter[] = { float(width), float(height), float(sourceWidth), float(sourceHeight) };
+				const float projection[] = { _frame->projection[10], _frame->projection[14], _frame->cameraPosition[3], mip == 0 ? 1.0f : 0.0f };
+				bgfx::setUniform(_reflection->uniforms[ReflectionResource::Filter], filter); bgfx::setUniform(_reflection->uniforms[ReflectionResource::Projection], projection); bgfx::setUniform(_reflection->uniforms[ReflectionResource::Screen], screen);
+				bgfx::setImage(0, _reflection->filtered, mip, bgfx::Access::Write);
+				bgfx::setImage(1, mip == 0 ? _reflection->mirror : _reflection->filtered, mip == 0 ? 0 : mip - 1, bgfx::Access::Read);
+				bgfx::setImage(2, _reflection->guides, mip, bgfx::Access::Write);
+				bgfx::setImage(3, mip == 0 ? _reflection->surface : _reflection->guides, mip == 0 ? 0 : mip - 1, bgfx::Access::Read);
+				bgfx::setTexture(4, _light->s_depth, _gbuffer->textures[2]);
+				bgfx::setTexture(5, _reflection->samplers[ReflectionResource::SurfaceSampler], _reflection->surface);
+				bgfx::setUniform(_light->u_invSceneViewProj, _frame->inverseViewProjection);
+				bgfx::setUniform(_light->u_sceneCamera, _frame->cameraPosition);
+				bgfx::setUniform(_light->u_sceneDirection, _frame->cameraDirection);
+				bgfx::dispatch(kRenderPassReflectionFilter, _reflection->programs[ReflectionResource::FilterProgram], (width + 7) / 8, (height + 7) / 8);
+				sourceWidth = width; sourceHeight = height;
+				width = max(uint16_t(1), uint16_t(width / 2)); height = max(uint16_t(1), uint16_t(height / 2));
+			}
+			bgfx::setViewRect(kRenderPassReflection, 0, 0, _frame->width, _frame->height);
+			bgfx::setViewFrameBuffer(kRenderPassReflection, _light->frameBuffer);
+			bgfx::setViewClear(kRenderPassReflection, BGFX_CLEAR_NONE);
+			bgfx::setViewTransform(kRenderPassReflection, NULL, _frame->screenProjection);
+			LightSystem::bindScene(*_frame, *_gbuffer, *_light);
+			const float resolve[] = { abs(_frame->projection[5]) * _frame->height * 0.5f, float(_reflection->mips - 1), 0.0f, 0.0f };
+			bgfx::setUniform(_reflection->uniforms[ReflectionResource::Resolve], resolve);
+			bgfx::setTexture(6, _reflection->samplers[ReflectionResource::ReflectionSampler], _reflection->filtered);
+			bgfx::setTexture(7, _reflection->samplers[ReflectionResource::GuideSampler], _reflection->guides);
+			bgfx::setTexture(8, _reflection->samplers[ReflectionResource::SurfaceSampler], _reflection->surface);
+			bgfx::setTexture(9, _reflection->samplers[ReflectionResource::ProbeSampler], _reflection->probeRadiance);
+			bgfx::setTexture(10, _reflection->samplers[ReflectionResource::VisibilitySampler], _reflection->probeVisibility);
+			bgfx::setUniform(_reflection->uniforms[ReflectionResource::Probes], _reflection->probes, 3);
+			bgfx::setUniform(_reflection->uniforms[ReflectionResource::Screen], screen);
+			screenSpaceTriangle(_light->layout);
+			bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_BLEND_ADD);
+			bgfx::submit(kRenderPassReflection, _reflection->programs[ReflectionResource::ResolveProgram]);
+		}
+
+		static void shutdown(ResMutT<ReflectionResource> _reflection)
+		{
+			destroyTargets(*_reflection);
+			if (bgfx::isValid(_reflection->probeSource)) { bgfx::destroy(_reflection->probeSource); }
+			if (bgfx::isValid(_reflection->probeRadiance)) { bgfx::destroy(_reflection->probeRadiance); }
+			if (bgfx::isValid(_reflection->probeVisibility)) { bgfx::destroy(_reflection->probeVisibility); }
+			for (auto buffer : _reflection->buffers) { bgfx::destroy(buffer); }
+			if (bgfx::isValid(_reflection->lightBuffer)) { bgfx::destroy(_reflection->lightBuffer); }
+			for (auto texture : _reflection->materials) { if (bgfx::isValid(texture)) { bgfx::destroy(texture); } }
+			bgfx::destroy(_reflection->emptyEnvironment);
+			bgfx::destroy(_reflection->emptyPoint);
+			for (auto program : _reflection->programs) { bgfx::destroy(program); }
+			for (auto sampler : _reflection->samplers) { bgfx::destroy(sampler); }
+			for (auto uniform : _reflection->uniforms) { bgfx::destroy(uniform); }
+		}
+	};
+}
+
 // Tone mapping
 namespace frost
 {
@@ -3025,6 +3724,7 @@ namespace frost
 		_app.insertResource<MeshDrawResource>();
 		_app.insertResource<SkyResource>();
 		_app.insertResource<EnvironmentResource>();
+		_app.insertResource<ReflectionResource>();
 		_app.insertResource<LocalLightResource>();
 		_app.getWorld().initResource<LocalShadowResource>();
 		_app.insertResource<ToneMapResource>();
@@ -3041,6 +3741,7 @@ namespace frost
 		startup = _app.addSystems(EcsStage::Startup, SunShadowSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, EnvironmentSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, LocalLightSystem::startup).after(startup).id();
+		startup = _app.addSystems(EcsStage::Startup, ReflectionSystem::startup).after(startup).id();
 		startup = _app.addSystems(EcsStage::Startup, ToneMapSystem::startup).after(startup).id();
 		_app.addSystems(EcsStage::Startup, UiSystem::startup).after(startup);
 
@@ -3056,6 +3757,7 @@ namespace frost
 		update = _app.addSystems(EcsStage::PostUpdate, LocalLightSystem::shadows).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, LightSystem::update).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, LocalLightSystem::update).after(update).id();
+		update = _app.addSystems(EcsStage::PostUpdate, ReflectionSystem::update).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, SkySystem::update).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, ToneMapSystem::update).after(update).id();
 		_app.addSystems(EcsStage::PostUpdate, UiSystem::update).after(update);
@@ -3064,6 +3766,7 @@ namespace frost
 		// Release GPU resources before stopping the backend.
 		SystemId shutdown = _app.addSystems(EcsStage::Shutdown, UiSystem::shutdown).id();
 		shutdown = _app.addSystems(EcsStage::Shutdown, ToneMapSystem::shutdown).after(shutdown).id();
+		shutdown = _app.addSystems(EcsStage::Shutdown, ReflectionSystem::shutdown).after(shutdown).id();
 		shutdown = _app.addSystems(EcsStage::Shutdown, LocalLightSystem::shutdown).after(shutdown).id();
 		shutdown = _app.addSystems(EcsStage::Shutdown, EnvironmentSystem::shutdown).after(shutdown).id();
 		shutdown = _app.addSystems(EcsStage::Shutdown, SunShadowSystem::shutdown).after(shutdown).id();

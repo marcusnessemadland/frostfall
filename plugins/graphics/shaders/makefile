@@ -53,11 +53,14 @@ vs_%.bin.h: vs_%.sc
 	$(call frost_embed_shader,$(VS_FLAGS),300_es,3)
 
 # Cube array samplers are core in OpenGL ES 3.2.
-fs_local_light.bin.h: fs_local_light.sc
+fs_local_light.bin.h fs_reflection.bin.h: %.bin.h: %.sc
 	$(call frost_embed_shader,$(FS_FLAGS),320_es,3)
 
 fs_%.bin.h: fs_%.sc
 	$(call frost_embed_shader,$(FS_FLAGS),300_es,3)
+
+cs_reflection_shade.bin.h cs_reflection_capture.bin.h cs_reflection_prefilter.bin.h: %.bin.h: %.sc
+	$(call frost_embed_shader,$(CS_FLAGS),320_es,1)
 
 cs_%.bin.h: cs_%.sc
 	$(call frost_embed_shader,$(CS_FLAGS),310_es,1)
