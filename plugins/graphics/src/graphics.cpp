@@ -215,7 +215,6 @@ namespace frost
 #include "fs_local_light.bin.h"
 #include "cs_environment_filter.bin.h"
 #include "fs_environment_sky.bin.h"
-#include "fs_environment_light.bin.h"
 
 #include <bgfx/embedded_shader.h>
 
@@ -264,7 +263,6 @@ namespace frost
 		BGFX_EMBEDDED_SHADER(fs_local_light),
 		BGFX_EMBEDDED_SHADER(cs_environment_filter),
 		BGFX_EMBEDDED_SHADER(fs_environment_sky),
-		BGFX_EMBEDDED_SHADER(fs_environment_light),
 		BGFX_EMBEDDED_SHADER_END()
 	};
 
@@ -2382,7 +2380,7 @@ namespace frost
 	};
 }
 
-// Environment capture and image based lighting
+// Environment radiance capture for GI and reflections
 namespace frost
 {
 	struct EnvironmentResource
@@ -2391,21 +2389,17 @@ namespace frost
 		bgfx::ProgramHandle instanced = BGFX_INVALID_HANDLE;
 		bgfx::ProgramHandle filter = BGFX_INVALID_HANDLE;
 		bgfx::ProgramHandle sky = BGFX_INVALID_HANDLE;
-		bgfx::ProgramHandle light = BGFX_INVALID_HANDLE;
 		bgfx::UniformHandle captureParameters = BGFX_INVALID_HANDLE;
 		bgfx::UniformHandle captureLights = BGFX_INVALID_HANDLE;
 		bgfx::UniformHandle captureCamera = BGFX_INVALID_HANDLE;
 		bgfx::UniformHandle captureSampler = BGFX_INVALID_HANDLE;
 		bgfx::UniformHandle filterParameters = BGFX_INVALID_HANDLE;
-		bgfx::UniformHandle lightParameters = BGFX_INVALID_HANDLE;
-		bgfx::UniformHandle sourceSampler = BGFX_INVALID_HANDLE;
-		bgfx::UniformHandle irradianceSampler = BGFX_INVALID_HANDLE;
 		bgfx::TextureHandle source = BGFX_INVALID_HANDLE;
 		bgfx::TextureHandle depth = BGFX_INVALID_HANDLE;
 		bgfx::TextureHandle irradiance = BGFX_INVALID_HANDLE;
 		bgfx::TextureHandle specular = BGFX_INVALID_HANDLE;
 		bgfx::FrameBufferHandle target = BGFX_INVALID_HANDLE;
-		float luminance[4] = {};
+		float luminance[4] = {}; // RGB source multiplier, maximum radiance mip; consumed by GI and reflections.
 		uint16_t resolution = 0;
 		uint8_t mips = 0;
 		bool active = false;
@@ -2423,13 +2417,9 @@ namespace frost
 				bgfx::getRendererType(), "cs_environment_filter"), true);
 			FROST_ASSERT(bgfx::isValid(_environment->filter), "Failed to create environment filtering compute program.");
 			_environment->sky = createProgram("vs_deferred_light", "fs_environment_sky");
-			_environment->light = createProgram("vs_deferred_light", "fs_environment_light");
 			_environment->captureParameters = bgfx::createUniform("u_capture", bgfx::UniformType::Vec4, 2);
 			_environment->captureLights = bgfx::createUniform("u_captureLights", bgfx::UniformType::Vec4, 8);
 			_environment->filterParameters = bgfx::createUniform("u_environmentFilter", bgfx::UniformType::Vec4);
-			_environment->lightParameters = bgfx::createUniform("u_environmentLight", bgfx::UniformType::Vec4);
-			_environment->sourceSampler = bgfx::createUniform("s_environment", bgfx::UniformType::Sampler);
-			_environment->irradianceSampler = bgfx::createUniform("s_irradiance", bgfx::UniformType::Sampler);
 			_environment->captureCamera = bgfx::createUniform("u_captureViewProjection", bgfx::UniformType::Mat4);
 			_environment->captureSampler = bgfx::createUniform("s_environmentCapture", bgfx::UniformType::Sampler);
 			bgfx::setViewName(kRenderPassEnvironment, "Environment");
@@ -2602,29 +2592,15 @@ namespace frost
 			if (!_environment->active) { _environment->rendered = false; }
 		}
 
-		static void light(ResT<RenderFrame> _frame, ResT<GBufferResource> _gbuffer, ResT<LightResource> _light,
-			ResT<EnvironmentResource> _environment)
-		{
-			if (!_frame->active || !_environment->active) { return; }
-			LightSystem::bindScene(*_frame, *_gbuffer, *_light);
-			bgfx::setTexture(6, _environment->sourceSampler, _environment->specular);
-			bgfx::setTexture(7, _environment->irradianceSampler, _environment->irradiance);
-			bgfx::setUniform(_environment->lightParameters, _environment->luminance);
-			screenSpaceTriangle(_light->layout);
-			bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_BLEND_ADD);
-			bgfx::submit(kRenderPassLight, _environment->light);
-		}
-
 		static void shutdown(ResMutT<EnvironmentResource> _environment)
 		{
 			destroyTargets(*_environment);
-			const bgfx::ProgramHandle programs[] = { _environment->capture, _environment->instanced, _environment->filter, _environment->sky, _environment->light };
+			const bgfx::ProgramHandle programs[] = { _environment->capture, _environment->instanced, _environment->filter, _environment->sky };
 			for (auto program : programs)
 			{
 				bgfx::destroy(program);
 			}
 			const bgfx::UniformHandle uniforms[] = { _environment->captureParameters, _environment->captureLights, _environment->filterParameters,
-				_environment->lightParameters, _environment->sourceSampler, _environment->irradianceSampler,
 				_environment->captureCamera, _environment->captureSampler };
 			for (auto uniform : uniforms)
 			{
@@ -3079,7 +3055,6 @@ namespace frost
 		update = _app.addSystems(EcsStage::PostUpdate, SunShadowSystem::update).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, LocalLightSystem::shadows).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, LightSystem::update).after(update).id();
-		update = _app.addSystems(EcsStage::PostUpdate, EnvironmentSystem::light).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, LocalLightSystem::update).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, SkySystem::update).after(update).id();
 		update = _app.addSystems(EcsStage::PostUpdate, ToneMapSystem::update).after(update).id();

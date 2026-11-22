@@ -205,12 +205,13 @@ namespace frost
 		bool isStatic = true; //!< Generate shadows once; false updates them every frame.
 	};
 
-	/// Captures distant environment independently of atmosphere and direct lights.
+	/// Environment radiance source for indirect diffuse lighting and reflections.
 	/// TransformComponent supplies the capture position; an absent transform uses the origin.
+	/// Capture only; GI and reflections apply local visibility before lighting surfaces.
 	struct SkyLightComponent
 	{
 		Vec3 color = { 1.0f, 1.0f, 1.0f };
-		float intensity = 0.3f;
+		float intensity = 1.0;
 		float skyDistanceThreshold = 150000.0f;
 		uint32_t resolution = 128; //!< Power of two, clamped to 16..128.
 		bool isStatic = false; //!< Capture and filter the environment once; false updates every frame.
