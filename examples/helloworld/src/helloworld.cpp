@@ -62,7 +62,7 @@ int main(int _argc, const char* _argv[])
 	if (cmdLine.hasArg('h', "help") )
 	{
 		help();
-		return frost::kExitFailure;
+		return frost::kExitSuccess;
 	}
 
 	uint32_t width = 1280;
@@ -100,5 +100,5 @@ int main(int _argc, const char* _argv[])
 	}
 	app.run();
 
-	return 0;
+	return frost::kExitSuccess;
 }

@@ -24,7 +24,9 @@ float localVisibility(vec3 _position, vec3 _normal)
 {
 	if (u_localLight[6].x < 0.0) { return 1.0; }
 	vec3 delta = _position + _normal * u_localLight[6].z - u_localLight[0].xyz;
-	float depth = length(delta) - u_localLight[6].y;
+	float depth = max(abs(delta.x), max(abs(delta.y), abs(delta.z))) - u_localLight[6].y;
+	float nearPlane = u_localLight[5].y;
+	float farPlane = u_localLight[0].w;
 	float visibility = 0.0;
 	if (u_localLight[1].w > 0.5 && u_localLight[1].w < 1.5)
 	{
@@ -41,7 +43,7 @@ float localVisibility(vec3 _position, vec3 _normal)
 				vec2 offset = vec2(float(xx), float(yy)) * u_localLight[6].w;
 				float sampleDepth = texture2DArrayLod(s_spotShadows, vec3(clamp(uv + offset,
 					vec2_splat(0.5 * u_localLight[6].w), vec2_splat(1.0 - 0.5 * u_localLight[6].w)), u_localLight[6].x), 0.0).r;
-				visibility += step(depth / u_localLight[0].w, sampleDepth);
+				visibility += step((farPlane - nearPlane * farPlane / max(depth, nearPlane)) / (farPlane - nearPlane), sampleDepth);
 			}
 		}
 	}
@@ -58,7 +60,7 @@ float localVisibility(vec3 _position, vec3 _normal)
 			{
 				vec3 offset = (right * float(xx) + up * float(yy)) * u_localLight[6].w * 2.0;
 				float sampleDepth = textureCubeArrayLod(s_pointShadows, vec4(direction + offset, u_localLight[6].x), 0.0).r;
-				visibility += step(depth / u_localLight[0].w, sampleDepth);
+				visibility += step((farPlane - nearPlane * farPlane / max(depth, nearPlane)) / (farPlane - nearPlane), sampleDepth);
 			}
 		}
 	}

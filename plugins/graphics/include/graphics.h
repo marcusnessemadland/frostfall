@@ -210,7 +210,7 @@ namespace frost
 	struct SkyLightComponent
 	{
 		Vec3 color = { 1.0f, 1.0f, 1.0f };
-		float intensity = 1.0f;
+		float intensity = 0.3f;
 		float skyDistanceThreshold = 150000.0f;
 		uint32_t resolution = 128; //!< Power of two, clamped to 16..128.
 		bool isStatic = false; //!< Capture and filter the environment once; false updates every frame.

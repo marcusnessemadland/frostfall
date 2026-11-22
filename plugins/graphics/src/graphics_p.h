@@ -522,6 +522,7 @@ namespace frost
 		MeshGeometry* next = NULL;
 		const Memory* data = NULL; // Serialized geometry for collision-checked sharing.
 		MeshLod* lods = NULL;
+		Aabb bounds;
 		uint32_t hash = 0;
 		uint32_t refCount = 0;
 		uint16_t numLods = 0;
@@ -1226,6 +1227,12 @@ namespace frost
 			FROST_PLACEMENT_NEW(geometry, MeshGeometry)();
 			geometry->data = data;
 			geometry->lods = mesh.lods;
+			geometry->bounds = mesh.lods[0].groups[0].bounds.aabb;
+			for (uint32_t ii = 1; ii < mesh.lods[0].numGroups; ++ii)
+			{
+				geometry->bounds.min = min(geometry->bounds.min, mesh.lods[0].groups[ii].bounds.aabb.min);
+				geometry->bounds.max = max(geometry->bounds.max, mesh.lods[0].groups[ii].bounds.aabb.max);
+			}
 			geometry->hash = geometryHash;
 			geometry->refCount = 1;
 			geometry->numLods = mesh.numLods;

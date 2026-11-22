@@ -227,10 +227,12 @@ namespace frost
 	constexpr uint8_t kLocalShadowColumns = 15;
 	constexpr uint8_t kLocalShadowRows = (kMaxLocalShadows * 6 + kLocalShadowColumns - 1) / kLocalShadowColumns;
 	constexpr bgfx::ViewId kRenderPassEnvironment = 0;
-	constexpr bgfx::ViewId kRenderPassGeometry = kRenderPassEnvironment + 1;
+	constexpr bgfx::ViewId kRenderPassEnvironmentFilter = kRenderPassEnvironment + 1;
+	constexpr bgfx::ViewId kRenderPassGeometry = kRenderPassEnvironmentFilter + 1;
 	constexpr bgfx::ViewId kRenderPassShadow = kRenderPassGeometry + 1;
 	constexpr bgfx::ViewId kRenderPassLocalShadow = kRenderPassShadow + 1;
-	constexpr bgfx::ViewId kRenderPassLight = kRenderPassLocalShadow + 1;
+	constexpr bgfx::ViewId kRenderPassLocalShadowCopy = kRenderPassLocalShadow + 1;
+	constexpr bgfx::ViewId kRenderPassLight = kRenderPassLocalShadowCopy + 1;
 	constexpr bgfx::ViewId kRenderPassLocalLight = kRenderPassLight + 1;
 	constexpr bgfx::ViewId kRenderPassSky = kRenderPassLocalLight + 1;
 	constexpr bgfx::ViewId kRenderPassToneMap = kRenderPassSky + 1;
@@ -351,19 +353,16 @@ namespace frost
 
 	static bool visibleBounds(const Aabb& _bounds, const Plane* _planes)
 	{
-		const Vec3 center = getCenter(_bounds);
-		const Vec3 extents = getExtents(_bounds);
 		for (uint8_t ii = 0; ii < 6; ++ii)
 		{
 			const Plane& plane = _planes[ii];
-			if (dot(plane.normal, center) + plane.dist + dot(abs(plane.normal), extents) < 0.0f)
-			{
-				return false;
-			}
+			const float x = plane.normal.x >= 0.0f ? _bounds.max.x : _bounds.min.x;
+			const float y = plane.normal.y >= 0.0f ? _bounds.max.y : _bounds.min.y;
+			const float z = plane.normal.z >= 0.0f ? _bounds.max.z : _bounds.min.z;
+			if (plane.normal.x * x + plane.normal.y * y + plane.normal.z * z + plane.dist < 0.0f) { return false; }
 		}
 		return true;
 	}
-
 	struct MeshRenderItem
 	{
 		const MeshRef* mesh;
@@ -383,17 +382,92 @@ namespace frost
 		uint16_t lod;
 	};
 
+	struct MeshBvhNode
+	{
+		Aabb bounds;
+		uint32_t item;
+		uint32_t escape;
+	};
+
 	struct MeshRenderResource
 	{
 		MeshRenderResource() = default;
-		MeshRenderResource(MeshRenderResource&& _other) : count(_other.count)
+		MeshRenderResource(MeshRenderResource&& _other) : count(_other.count), frame(_other.frame), topology(_other.topology)
 		{
 			items = frost::move(_other.items);
 			lods = frost::move(_other.lods);
+			nodes = frost::move(_other.nodes);
+			order = frost::move(_other.order);
 		}
 		DynamicStorageT<MeshRenderItem> items;
 		DynamicStorageT<MeshLodState> lods;
+		DynamicStorageT<MeshBvhNode> nodes;
+		DynamicStorageT<uint32_t> order;
 		uint32_t count = 0;
+		uint32_t frame = 0;
+		uint64_t topology = 0;
+
+		void build(uint32_t _begin, uint32_t _end, uint32_t& _next)
+		{
+			MeshBvhNode& node = *nodes.getPtr(_next++);
+			node.bounds = items.getPtr(*order.getPtr(_begin))->bounds;
+			for (uint32_t ii = _begin + 1; ii < _end; ++ii)
+			{
+				const Aabb& bounds = items.getPtr(*order.getPtr(ii))->bounds;
+				node.bounds.min = min(node.bounds.min, bounds.min);
+				node.bounds.max = max(node.bounds.max, bounds.max);
+			}
+			node.item = UINT32_MAX;
+			if (_end - _begin == 1) { node.item = *order.getPtr(_begin); }
+			else
+			{
+				const Vec3 extents = getExtents(node.bounds);
+				const uint8_t axis = extents.x > extents.y ? (extents.x > extents.z ? 0 : 2) : (extents.y > extents.z ? 1 : 2);
+				const auto center = [&](uint32_t _index)
+				{
+					const Vec3 value = getCenter(items.getPtr(*order.getPtr(_index))->bounds);
+					return axis == 0 ? value.x : (axis == 1 ? value.y : value.z);
+				};
+				const int32_t middle = int32_t((_begin + _end) / 2);
+				int32_t lo = int32_t(_begin), hi = int32_t(_end - 1);
+				// Median partition bounds traversal depth, including coincident instances.
+				while (lo < hi)
+				{
+					const float pivot = center(uint32_t((lo + hi) / 2));
+					int32_t left = lo, right = hi;
+					while (left <= right)
+					{
+						while (center(uint32_t(left)) < pivot) { ++left; }
+						while (center(uint32_t(right)) > pivot) { --right; }
+						if (left <= right)
+						{
+							swap(*order.getPtr(uint32_t(left++)), *order.getPtr(uint32_t(right--)));
+						}
+					}
+					if (middle <= right) { hi = right; }
+					else if (middle >= left) { lo = left; }
+					else { break; }
+				}
+				build(_begin, uint32_t(middle), _next);
+				build(uint32_t(middle), _end, _next);
+			}
+			node.escape = _next;
+		}
+
+		void refit()
+		{
+			for (uint32_t ii = count * 2 - 1; ii-- > 0;)
+			{
+				MeshBvhNode& node = *nodes.getPtr(ii);
+				if (node.item != UINT32_MAX) { node.bounds = items.getPtr(node.item)->bounds; }
+				else
+				{
+					const MeshBvhNode& left = *nodes.getPtr(ii + 1);
+					const MeshBvhNode& right = *nodes.getPtr(left.escape);
+					node.bounds = { min(left.bounds.min, right.bounds.min), max(left.bounds.max, right.bounds.max) };
+				}
+			}
+		}
 	};
 
 	struct MeshRenderSystem
@@ -402,12 +476,17 @@ namespace frost
 		{
 			_render->items.setAllocator(_world.getAllocator());
 			_render->lods.setAllocator(_world.getAllocator());
+			_render->nodes.setAllocator(_world.getAllocator());
+			_render->order.setAllocator(_world.getAllocator());
 		}
 
 		static void update(World& _world, ResT<RenderFrame> _frame, ResT<GraphicsSettings> _settings,
 			QueryT<Entity, const MeshComponent&, OptionalT<const TransformComponent>> _meshes,
 			ResMutT<MeshRenderResource> _render, ResMutT<GraphicsStatsResource> _stats)
 		{
+			const uint32_t previousCount = _render->count;
+			uint64_t topology = 14695981039346656037ull;
+			++_render->frame;
 			_render->count = 0;
 			*_stats = GraphicsStatsResource{};
 			for (MeshGeometry* geometry : s_meshContext->geometries)
@@ -432,13 +511,9 @@ namespace frost
 				}
 				item.mesh = mesh;
 				item.instance = _instance;
-				item.bounds = { { kFloatLargest, kFloatLargest, kFloatLargest }, { -kFloatLargest, -kFloatLargest, -kFloatLargest } };
-				for (uint32_t ii = 0; ii < mesh->lods[0].numGroups; ++ii)
-				{
-					const Aabb bounds = transformBounds(mesh->lods[0].groups[ii].bounds.aabb, item.model);
-					item.bounds.min = min(item.bounds.min, bounds.min);
-					item.bounds.max = max(item.bounds.max, bounds.max);
-				}
+				item.bounds = transformBounds(mesh->geometry->bounds, item.model);
+				topology = (topology ^ _entity.idx) * 1099511628211ull;
+				topology = (topology ^ _entity.generation) * 1099511628211ull;
 				item.visible = _frame->active && visibleBounds(item.bounds, _frame->frustum);
 				const Aabb viewBounds = transformBounds(item.bounds, _frame->view);
 				item.nearDepth = viewBounds.min.z;
@@ -485,28 +560,50 @@ namespace frost
 					++_stats->visibleMeshes;
 				}
 			});
+			if (_render->count > 0)
+			{
+				if (previousCount != _render->count || topology != _render->topology)
+				{
+					_render->nodes.setCapacity(_render->count * 2 - 1, 0);
+					_render->order.setCapacity(_render->count, 0);
+					for (uint32_t ii = 0; ii < _render->count; ++ii) { *_render->order.getPtr(ii) = ii; }
+					uint32_t next = 0;
+					_render->build(0, _render->count, next);
+				}
+				else { _render->refit(); }
+			}
+			_render->topology = topology;
 		}
 	};
 
 	struct MeshDraw
 	{
 		const MeshGroup* group;
+		const MeshPrimitive* primitive;
 		const MaterialCreate* material;
 		uint64_t state;
 		float matrix[16];
 		uint8_t pass;
+		uint8_t bucket;
 		bool depthOnly;
+		bool masked;
 	};
 
 	struct MeshDrawResource
 	{
 		MeshDrawResource() = default;
-		MeshDrawResource(MeshDrawResource&& _other) : count(_other.count)
+		MeshDrawResource(MeshDrawResource&& _other) : count(_other.count), frame(_other.frame),
+			instances(_other.instances), capacity(_other.capacity), used(_other.used)
 		{
 			draws = frost::move(_other.draws);
+			_other.instances = BGFX_INVALID_HANDLE;
 		}
 		DynamicStorageT<MeshDraw> draws;
 		uint32_t count = 0;
+		uint32_t frame = UINT32_MAX;
+		bgfx::DynamicVertexBufferHandle instances = BGFX_INVALID_HANDLE;
+		uint32_t capacity = 0;
+		uint32_t used = 0;
 	};
 
 	struct MeshPass
@@ -514,16 +611,19 @@ namespace frost
 		enum Flags : uint8_t
 		{
 			DepthOnly = 0x1,
-			IndependentView = 0x2, //!< Use this pass's frustum and full mesh detail, independent of the camera.
+			IndependentView = 0x2, //!< Use this pass's frustum and the coarsest mesh LOD.
 		};
 		bgfx::ViewId view;
 		bgfx::ProgramHandle programs[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
 		bgfx::ProgramHandle instancedPrograms[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
 		bgfx::UniformHandle transform = BGFX_INVALID_HANDLE;
 		bgfx::UniformHandle tile = BGFX_INVALID_HANDLE;
-		const float* cullView = NULL;
+		const float* sortView = NULL;
+		float nearDepth = 0.0f;
+		float depthScale = 0.01f;
 		const float* viewProjection = NULL;
 		const Plane* frustum = NULL;
+		Plane planes[6] = { InitNone, InitNone, InitNone, InitNone, InitNone, InitNone };
 		const Aabb* bounds = NULL;
 		uint64_t state = 0;
 		uint16_t resolution = 0;
@@ -542,93 +642,111 @@ namespace frost
 		uint16_t scissor[4] = {};
 	};
 
+	static bool meshPassVisible(const Aabb& _bounds, const MeshPass& _pass, const GraphicsSettings& _settings)
+	{
+		if (!_pass.active) { return false; }
+		if (_pass.minimumDistance > 0.0f)
+		{
+			const Vec3 farthest = max(abs(sub(_bounds.min, _pass.origin)), abs(sub(_bounds.max, _pass.origin)));
+			if (dot(farthest, farthest) < square(_pass.minimumDistance)) { return false; }
+		}
+		return !_settings.frustumCulling || ((NULL == _pass.frustum || visibleBounds(_bounds, _pass.frustum))
+			&& (NULL == _pass.bounds || overlap(_bounds, *_pass.bounds)));
+	}
 	static void gatherMeshes(const MeshRenderResource& _render, MeshDrawResource& _draws,
 		const MeshPass* _passes, uint8_t _numPasses, const GraphicsSettings& _settings, MeshPassStats& _stats)
 	{
 		FROST_ASSERT(_numPasses > 0 && _numPasses <= 6, "Mesh submission supports up to six views.");
 		_draws.count = 0;
-		const bool depthOnly = 0 != (_passes[0].flags & MeshPass::DepthOnly);
-		for (uint32_t ii = 0; ii < _render.count; ++ii)
+		if (_draws.frame != _render.frame)
 		{
-			const MeshRenderItem& item = *_render.items.getPtr(ii);
-			if (depthOnly && !item.instance.castShadows)
+			_draws.frame = _render.frame;
+			_draws.used = 0;
+		}
+		const bool depthOnly = 0 != (_passes[0].flags & MeshPass::DepthOnly);
+		// Preorder nodes have escape links: reject a whole branch without a stack.
+		for (uint32_t ii = 0; _render.count > 0 && ii < _render.count * 2 - 1;)
+		{
+			const MeshBvhNode& node = *_render.nodes.getPtr(ii);
+			uint8_t mask = 0;
+			for (uint8_t kk = 0; kk < _numPasses; ++kk)
 			{
+				if (meshPassVisible(node.bounds, _passes[kk], _settings)) { mask |= uint8_t(1 << kk); }
+			}
+			if (0 == mask)
+			{
+				_stats.culled += (node.escape - ii + 1) / 2;
+				ii = node.escape;
 				continue;
 			}
+			++ii;
+			if (UINT32_MAX == node.item) { continue; }
+			const MeshRenderItem& item = *_render.items.getPtr(node.item);
+			if (depthOnly && !item.instance.castShadows) { continue; }
 			uint16_t lodIndex = item.lod;
-			if (0 != (_passes[0].flags & MeshPass::IndependentView))
+			if (depthOnly || 0 != (_passes[0].flags & MeshPass::IndependentView))
 			{
-				lodIndex = 0;
-			}
-			if (depthOnly && _settings.lods)
-			{
-				lodIndex = item.mesh->numLods - 1;
+				lodIndex = _settings.lods ? uint16_t(item.mesh->numLods - 1) : 0;
 			}
 			const MeshLod& lod = item.mesh->lods[lodIndex];
-			if (!depthOnly && 0 == (_passes[0].flags & MeshPass::IndependentView)
-				&& _settings.frustumCulling && !item.visible)
-			{
-				_stats.culled += lod.numGroups;
-				continue;
-			}
-			float cullMatrix[16];
-			memCopy(cullMatrix, item.model, sizeof(cullMatrix));
-			if (NULL != _passes[0].cullView)
-			{
-				mtxMul(cullMatrix, item.model, _passes[0].cullView);
-			}
 			float matrices[6][16];
 			bool ready[6] = {};
 			for (uint32_t jj = 0; jj < lod.numGroups; ++jj)
 			{
 				const MeshGroup& group = lod.groups[jj];
-				const Aabb bounds = transformBounds(group.bounds.aabb, cullMatrix);
+				const Aabb groupBounds = transformBounds(group.bounds.aabb, item.model);
 				const MaterialCreate& material = getMeshMaterial(item.instance, *item.mesh, group.materialSlot);
+				const bool masked = isMaterialMasked(material);
+				const uint64_t state = meshState(material, item.model);
+				uint8_t groupMask = 0;
 				for (uint8_t kk = 0; kk < _numPasses; ++kk)
 				{
-					const MeshPass& pass = _passes[kk];
-					const Vec3 farthest = max(abs(sub(bounds.min, pass.origin)), abs(sub(bounds.max, pass.origin)));
-					if (pass.minimumDistance > 0.0f && dot(farthest, farthest) < square(pass.minimumDistance))
+					if (0 != (mask & (1 << kk)) && meshPassVisible(groupBounds, _passes[kk], _settings)) { groupMask |= uint8_t(1 << kk); }
+					else { _stats.culled += group.numPrimitives; }
+				}
+				if (0 == groupMask) { continue; }
+				for (uint16_t pp = 0; pp < group.numPrimitives; ++pp)
+				{
+					const MeshPrimitive& primitive = group.primitives[pp];
+					const Aabb bounds = group.numPrimitives == 1 ? groupBounds : transformBounds(primitive.bounds.aabb, item.model);
+					for (uint8_t kk = 0; kk < _numPasses; ++kk)
 					{
-						++_stats.culled;
-						continue;
-					}
-					if (!pass.active || (_settings.frustumCulling
-						&& ((NULL != pass.frustum && !visibleBounds(bounds, pass.frustum))
-							|| (NULL != pass.bounds && !overlap(bounds, *pass.bounds)))))
-					{
-						++_stats.culled;
-						continue;
-					}
-					if (!ready[kk])
-					{
-						memCopy(matrices[kk], item.model, sizeof(item.model));
-						if (NULL != pass.viewProjection)
+						if (0 == (groupMask & (1 << kk))) { continue; }
+						const MeshPass& pass = _passes[kk];
+						if (group.numPrimitives > 1 && !meshPassVisible(bounds, pass, _settings)) { ++_stats.culled; continue; }
+						if (!ready[kk])
 						{
-							mtxMul(matrices[kk], item.model, pass.viewProjection);
+							if (NULL != pass.viewProjection) { mtxMul(matrices[kk], item.model, pass.viewProjection); }
+							else { memCopy(matrices[kk], item.model, sizeof(item.model)); }
+							ready[kk] = true;
 						}
-						ready[kk] = true;
+						if (_draws.count == _draws.draws.getCapacity())
+						{
+							_draws.draws.setCapacity(max(128u, _draws.count * 2), _draws.count);
+						}
+						MeshDraw& draw = *_draws.draws.getPtr(_draws.count++);
+						draw.group = &group;
+						draw.primitive = &primitive;
+						draw.masked = masked;
+						draw.material = depthOnly && !masked ? NULL : &material;
+						draw.state = state | pass.state;
+						draw.pass = kk;
+						draw.depthOnly = depthOnly;
+						float depth = bounds.min.z;
+						if (NULL != pass.sortView)
+						{
+							const float* view = pass.sortView;
+							depth = view[2] * (view[2] >= 0.0f ? bounds.min.x : bounds.max.x)
+								+ view[6] * (view[6] >= 0.0f ? bounds.min.y : bounds.max.y)
+								+ view[10] * (view[10] >= 0.0f ? bounds.min.z : bounds.max.z) + view[14];
+						}
+						draw.bucket = uint8_t(clamp((depth - pass.nearDepth) * pass.depthScale, 0.0f, 1.0f) * 31.0f);
+						memCopy(draw.matrix, matrices[kk], sizeof(draw.matrix));
 					}
-					if (_draws.count == _draws.draws.getCapacity())
-					{
-						_draws.draws.setCapacity(max(128u, _draws.count * 2), _draws.count);
-					}
-					MeshDraw& draw = *_draws.draws.getPtr(_draws.count++);
-					draw.group = &group;
-					draw.material = &material;
-					if (depthOnly && !isMaterialMasked(material))
-					{
-						draw.material = NULL;
-					}
-					draw.state = meshState(material, item.model) | pass.state;
-					draw.pass = kk;
-					draw.depthOnly = depthOnly;
-					memCopy(draw.matrix, matrices[kk], sizeof(draw.matrix));
 				}
 			}
 		}
 	}
-
 	struct MaterialUniforms
 	{
 		bgfx::UniformHandle samplers[MaterialTexture::Count];
@@ -698,6 +816,7 @@ namespace frost
 		static void startup(ResMutT<GBufferResource> _gbuffer)
 		{
 			bgfx::setViewName(kRenderPassGeometry, "Geometry");
+			bgfx::setViewMode(kRenderPassGeometry, bgfx::ViewMode::Sequential);
 
 			const bgfx::RendererType::Enum type = bgfx::getRendererType();
 			_gbuffer->program = bgfx::createProgram(
@@ -800,6 +919,7 @@ namespace frost
 			pass.programs[0] = _gbuffer->program;
 			pass.instancedPrograms[0] = _gbuffer->instancedProgram;
 			pass.frustum = _frame->frustum;
+			pass.sortView = _frame->view;
 			pass.state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS;
 			gatherMeshes(*_render, *_draws, &pass, 1, *_settings, _stats->geometry);
 			submitMeshes(*_draws, _gbuffer->material, &pass, *_settings, _stats->geometry);
@@ -834,10 +954,17 @@ namespace frost
 		{
 			return compareAscending<uint8_t>(&a.pass, &b.pass);
 		}
+		if (a.masked != b.masked) { return a.masked ? 1 : -1; }
+		if (a.bucket != b.bucket) { return compareAscending<uint8_t>(&a.bucket, &b.bucket); }
 		if (a.group != b.group)
 		{
 			const uintptr_t lhs = uintptr_t(a.group);
 			const uintptr_t rhs = uintptr_t(b.group);
+			return compareAscending<uintptr_t>(&lhs, &rhs);
+		}
+		if (a.primitive != b.primitive)
+		{
+			const uintptr_t lhs = uintptr_t(a.primitive), rhs = uintptr_t(b.primitive);
 			return compareAscending<uintptr_t>(&lhs, &rhs);
 		}
 		if (a.state != b.state)
@@ -901,98 +1028,76 @@ namespace frost
 	static void submitMeshes(MeshDrawResource& _draws, const MaterialUniforms& _materialUniforms,
 		const MeshPass* _passes, const GraphicsSettings& _settings, MeshPassStats& _stats)
 	{
-		quickSort(_draws.draws.getPtr(), _draws.count, compareMeshDraws);
+		// BVH traversal produces ordered runs; first-pivot quicksort can become quadratic.
+		stableSort(_draws.draws.getAllocator(), _draws.draws.getPtr(), _draws.count,
+			[](const MeshDraw& _a, const MeshDraw& _b) { return compareMeshDraws(&_a, &_b) < 0; });
+		const bool instancing = _settings.instancing;
+		uint32_t offset = _draws.used;
+		if (instancing && _draws.count > 0)
+		{
+			if (_draws.used + _draws.count > _draws.capacity)
+			{
+				if (bgfx::isValid(_draws.instances)) { bgfx::destroy(_draws.instances); }
+				_draws.capacity = max(4096u, max(_draws.count, _draws.capacity * 2));
+				bgfx::VertexLayout layout;
+				layout.begin().add(bgfx::Attrib::TexCoord0, 4, bgfx::AttribType::Float)
+					.add(bgfx::Attrib::TexCoord1, 4, bgfx::AttribType::Float)
+					.add(bgfx::Attrib::TexCoord2, 4, bgfx::AttribType::Float)
+					.add(bgfx::Attrib::TexCoord3, 4, bgfx::AttribType::Float).end();
+				_draws.instances = bgfx::createDynamicVertexBuffer(_draws.capacity, layout);
+				_draws.used = offset = 0;
+			}
+			const bgfx::Memory* memory = bgfx::alloc(_draws.count * 64);
+			for (uint32_t ii = 0; ii < _draws.count; ++ii)
+			{
+				memCopy(memory->data + ii * 64, _draws.draws.getPtr(ii)->matrix, 64);
+			}
+			bgfx::update(_draws.instances, offset, memory);
+			_draws.used += _draws.count;
+		}
 		for (uint32_t begin = 0; begin < _draws.count;)
 		{
 			const MeshDraw& draw = *_draws.draws.getPtr(begin);
 			uint32_t end = begin + 1;
-			while (end < _draws.count && 0 == compareMeshDraws(&draw, _draws.draws.getPtr(end)))
-			{
-				++end;
-			}
+			while (end < _draws.count && 0 == compareMeshDraws(&draw, _draws.draws.getPtr(end))) { ++end; }
 			const MeshPass& pass = _passes[draw.pass];
 			const MeshGroup& group = *draw.group;
-			uint8_t program = 0;
-			if (draw.depthOnly && NULL != draw.material)
-			{
-				program = 1;
-			}
+			const MeshPrimitive& primitive = *draw.primitive;
+			const uint8_t program = draw.depthOnly && draw.masked ? 1 : 0;
 			while (begin < end)
 			{
-				uint32_t count = 1;
-				bgfx::InstanceDataBuffer instances;
-				if (_settings.instancing && bgfx::isValid(pass.instancedPrograms[program]))
+				const uint32_t count = instancing && bgfx::isValid(pass.instancedPrograms[program]) ? end - begin : 1;
+				bgfx::setVertexBuffer(0, group.vertexBuffer);
+				bgfx::setIndexBuffer(group.indexBuffer, primitive.startIndex, primitive.numIndices);
+				if (bgfx::isValid(pass.tile))
 				{
-					// Instance data shares the transient vertex pool with fullscreen and UI draws.
-					const uint32_t reserve = bgfx::getCaps()->limits.maxTransientVbSize / 256;
-					const uint32_t available = bgfx::getAvailInstanceDataBuffer(end - begin + reserve, 64);
-					if (available > reserve)
-					{
-						count = min(end - begin, available - reserve);
-					}
+					const float tile[] = { 0.25f, -0.75f + 0.5f * float(pass.cascade), 0.0f, 0.0f };
+					bgfx::setScissor(uint16_t(pass.resolution * pass.cascade), 0, pass.resolution, pass.resolution);
+					bgfx::setUniform(pass.tile, tile);
 				}
+				if (NULL != draw.material) { bindMaterial(*draw.material, _materialUniforms, draw.depthOnly); }
+				bgfx::ProgramHandle shader = pass.programs[program];
 				if (count > 1)
 				{
-					bgfx::allocInstanceDataBuffer(&instances, count, 64);
-					for (uint32_t ii = 0; ii < count; ++ii)
-					{
-						memCopy(instances.data + ii * 64, _draws.draws.getPtr(begin + ii)->matrix, 64);
-					}
+					bgfx::setInstanceDataBuffer(_draws.instances, offset + begin, count);
+					shader = pass.instancedPrograms[program];
 				}
-				for (uint16_t ii = 0; ii < group.numPrimitives; ++ii)
-				{
-					const MeshPrimitive& primitive = group.primitives[ii];
-					bgfx::setVertexBuffer(0, group.vertexBuffer);
-					bgfx::setIndexBuffer(group.indexBuffer, primitive.startIndex, primitive.numIndices);
-					if (bgfx::isValid(pass.tile))
-					{
-						const float tile[] = { 0.25f, -0.75f + 0.5f * float(pass.cascade), 0.0f, 0.0f };
-						bgfx::setScissor(uint16_t(pass.resolution * pass.cascade), 0, pass.resolution, pass.resolution);
-						bgfx::setUniform(pass.tile, tile);
-					}
-					if (NULL != draw.material)
-					{
-						bindMaterial(*draw.material, _materialUniforms, draw.depthOnly);
-					}
-					bgfx::ProgramHandle shader = pass.programs[program];
-					if (count > 1)
-					{
-						bgfx::setInstanceDataBuffer(&instances);
-						shader = pass.instancedPrograms[program];
-					}
-					else if (bgfx::isValid(pass.transform))
-					{
-						bgfx::setUniform(pass.transform, _draws.draws.getPtr(begin)->matrix);
-					}
-					else
-					{
-						bgfx::setTransform(_draws.draws.getPtr(begin)->matrix);
-					}
-					if (bgfx::isValid(pass.parameters))
-					{
-						bgfx::setUniform(pass.parameters, pass.values, pass.numParameters);
-					}
-					if (bgfx::isValid(pass.lights))
-					{
-						bgfx::setUniform(pass.lights, pass.lightValues, 8);
-					}
-					if (bgfx::isValid(pass.camera)) { bgfx::setUniform(pass.camera, pass.cameraMatrix); }
-					if (pass.scissor[2] > 0) { bgfx::setScissor(pass.scissor[0], pass.scissor[1], pass.scissor[2], pass.scissor[3]); }
-					bgfx::setState(draw.state);
-					bgfx::submit(pass.view, shader);
-					++_stats.draws;
-					_stats.instances += count;
-					_stats.triangles += uint64_t(count) * primitive.numIndices / 3;
-					if (NULL != draw.material && isMaterialMasked(*draw.material))
-					{
-						++_stats.masked;
-					}
-				}
+				else if (bgfx::isValid(pass.transform)) { bgfx::setUniform(pass.transform, _draws.draws.getPtr(begin)->matrix); }
+				else { bgfx::setTransform(_draws.draws.getPtr(begin)->matrix); }
+				if (bgfx::isValid(pass.parameters)) { bgfx::setUniform(pass.parameters, pass.values, pass.numParameters); }
+				if (bgfx::isValid(pass.lights)) { bgfx::setUniform(pass.lights, pass.lightValues, 8); }
+				if (bgfx::isValid(pass.camera)) { bgfx::setUniform(pass.camera, pass.cameraMatrix); }
+				if (pass.scissor[2] > 0) { bgfx::setScissor(pass.scissor[0], pass.scissor[1], pass.scissor[2], pass.scissor[3]); }
+				bgfx::setState(draw.state);
+				bgfx::submit(pass.view, shader);
+				++_stats.draws;
+				_stats.instances += count;
+				_stats.triangles += uint64_t(count) * primitive.numIndices / 3;
+				if (draw.masked) { ++_stats.masked; }
 				begin += count;
 			}
 		}
 	}
-
 } // namespace frost
 
 // Sun shadow resources
@@ -1092,6 +1197,7 @@ namespace frost
 			_shadows->u_shadowViewProjection = bgfx::createUniform("u_shadowViewProjection", bgfx::UniformType::Mat4);
 			_shadows->u_shadowTile = bgfx::createUniform("u_shadowTile", bgfx::UniformType::Vec4);
 			bgfx::setViewName(kRenderPassShadow, "Global Shadow");
+			bgfx::setViewMode(kRenderPassShadow, bgfx::ViewMode::Sequential);
 			_shadows->u_shadowMatrix = bgfx::createUniform("u_shadowMatrix", bgfx::UniformType::Mat4, 4);
 			_shadows->u_shadowSplits = bgfx::createUniform("u_shadowSplits", bgfx::UniformType::Vec4);
 			_shadows->u_shadowTexels = bgfx::createUniform("u_shadowTexels", bgfx::UniformType::Vec4);
@@ -1210,9 +1316,10 @@ namespace frost
 				memCopy(pass.instancedPrograms, _shadows->instancedPrograms, sizeof(pass.instancedPrograms));
 				pass.transform = _shadows->u_shadowViewProjection;
 				pass.tile = _shadows->u_shadowTile;
-				pass.cullView = lightView;
+				pass.sortView = lightView;
+				pass.nearDepth = minZ;
+				pass.depthScale = 1.0f / max(0.001f, maxZ - minZ);
 				pass.viewProjection = _shadows->matrices[cascade];
-				pass.bounds = &cascadeBounds[cascade];
 				pass.state = BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS;
 				pass.resolution = resolution;
 				pass.flags = MeshPass::DepthOnly;
@@ -1243,8 +1350,19 @@ namespace frost
 					const Aabb& bounds = cascadeBounds[cascade];
 					pass.active = bounds.min.x <= bounds.max.x && bounds.min.y <= bounds.max.y && bounds.min.z <= bounds.max.z;
 				}
+				if (pass.active && _graphics->frustumCulling)
+				{
+					// Transform six planes once, rather than every BVH/group bound for every cascade.
+					const Aabb& bounds = cascadeBounds[cascade];
+					float cullProjection[16], cullViewProjection[16];
+					mtxOrtho(cullProjection, bounds.min.x, bounds.max.x, bounds.min.y, bounds.max.y,
+						bounds.min.z, bounds.max.z, 0.0f, homogeneous);
+					mtxMul(cullViewProjection, lightView, cullProjection);
+					buildFrustumPlanes(pass.planes, cullViewProjection, homogeneous);
+					pass.frustum = pass.planes;
+				}
 			}
-			// One atlas pass and clear. Transform/cull each group once for all cascades.
+			// One atlas clear; submit the culled caster batches in light-depth order.
 			bgfx::setViewRect(kRenderPassShadow, 0, 0, uint16_t(resolution * 4), resolution);
 			bgfx::setViewFrameBuffer(kRenderPassShadow, _shadows->target);
 			bgfx::setViewClear(kRenderPassShadow, BGFX_CLEAR_DEPTH, 0, 1.0f);
@@ -1259,9 +1377,10 @@ namespace frost
 			memCopy(_shadows->sceneView, _frame->view, sizeof(_shadows->sceneView));
 		}
 
-		static void shutdown(ResMutT<SunShadowTargets> _shadows)
+		static void shutdown(ResMutT<SunShadowTargets> _shadows, ResMutT<MeshDrawResource> _draws)
 		{
 			destroyTargets(*_shadows);
+			if (bgfx::isValid(_draws->instances)) { bgfx::destroy(_draws->instances); }
 			for (bgfx::ProgramHandle program : _shadows->programs) { bgfx::destroy(program); }
 			for (bgfx::ProgramHandle program : _shadows->instancedPrograms)
 			{
@@ -1950,6 +2069,7 @@ namespace frost
 			_local->copyTypes = bgfx::createUniform("u_localShadowTypes", bgfx::UniformType::Vec4, 8);
 			_local->atlasSampler = bgfx::createUniform("s_localShadowAtlas", bgfx::UniformType::Sampler);
 			bgfx::setViewName(kRenderPassLocalShadow, "Local Shadow");
+			bgfx::setViewName(kRenderPassLocalShadowCopy, "Local Shadow copy");
 			bgfx::setViewMode(kRenderPassLocalShadow, bgfx::ViewMode::Sequential);
 			bgfx::setViewName(kRenderPassLocalLight, "Local Light");
 			bgfx::setViewMode(kRenderPassLocalLight, bgfx::ViewMode::Sequential);
@@ -2134,18 +2254,21 @@ namespace frost
 				if (spot) { faces = 1; }
 				const Vec3 extent = { light.data[0][3], light.data[0][3], light.data[0][3] };
 				const Aabb bounds = { sub(position, extent), add(position, extent) };
+				MeshPass passes[6];
 				for (uint8_t face = 0; face < faces; ++face)
 				{
 					if (!spot) { cubeView(view[face], position, face); }
 					float viewProjection[16];
 					mtxMul(viewProjection, view[face], projection);
-					Plane frustum[6] = { InitNone, InitNone, InitNone, InitNone, InitNone, InitNone };
+					Plane* frustum = passes[face].planes;
 					buildFrustumPlanes(frustum, viewProjection, bgfx::getCaps()->homogeneousDepth);
-					MeshPass pass;
+					MeshPass& pass = passes[face];
 					pass.view = kRenderPassLocalShadow;
 					pass.flags = MeshPass::DepthOnly | MeshPass::IndependentView;
 					pass.state = BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS;
 					pass.frustum = frustum;
+					pass.sortView = view[face];
+					pass.depthScale = 1.0f / light.data[0][3];
 					pass.bounds = &bounds;
 					pass.parameters = _local->shadowParameters;
 					pass.numParameters = 3;
@@ -2166,9 +2289,9 @@ namespace frost
 					if (spot) { pass.values[7] = 1.0f; }
 					memCopy(pass.programs, _local->shadows, sizeof(pass.programs));
 					memCopy(pass.instancedPrograms, _local->instanced, sizeof(pass.instancedPrograms));
-					gatherMeshes(*_meshes, *_draws, &pass, 1, *_graphics, _stats->localShadows);
-					submitMeshes(*_draws, _gbuffer->material, &pass, *_graphics, _stats->localShadows);
 				}
+				gatherMeshes(*_meshes, *_draws, passes, faces, *_graphics, _stats->localShadows);
+				submitMeshes(*_draws, _gbuffer->material, passes, *_graphics, _stats->localShadows);
 				state.rendered = light.isStatic;
 			}
 			if (copies > 0)
@@ -2181,7 +2304,7 @@ namespace frost
 				bgfx::setTexture(2, _local->atlasSampler, _local->atlas);
 				bgfx::setImage(0, _local->pointDepth, 0, kMaxLocalShadows * 6, 0, bgfx::Access::Write);
 				bgfx::setImage(1, _local->spotDepth, 0, kMaxLocalShadows, 0, bgfx::Access::Write);
-				bgfx::dispatch(kRenderPassLocalShadow, _local->copy, (resolution + 7) / 8, (resolution + 7) / 8, copies * 6);
+				bgfx::dispatch(kRenderPassLocalShadowCopy, _local->copy, (resolution + 7) / 8, (resolution + 7) / 8, copies * 6);
 			}
 		}
 
@@ -2310,6 +2433,7 @@ namespace frost
 			_environment->captureCamera = bgfx::createUniform("u_captureViewProjection", bgfx::UniformType::Mat4);
 			_environment->captureSampler = bgfx::createUniform("s_environmentCapture", bgfx::UniformType::Sampler);
 			bgfx::setViewName(kRenderPassEnvironment, "Environment");
+			bgfx::setViewName(kRenderPassEnvironmentFilter, "Environment filter");
 			bgfx::setViewMode(kRenderPassEnvironment, bgfx::ViewMode::Sequential);
 		}
 
@@ -2377,9 +2501,9 @@ namespace frost
 				const Vec3 position = { transform[12], transform[13], transform[14] };
 				const float threshold = max(0.0f, _component.skyDistanceThreshold);
 				float farPlane = max(1000.0f, threshold * 2.0f);
-				for (uint32_t ii = 0; ii < _meshes->count; ++ii)
+				if (_meshes->count > 0)
 				{
-					const Aabb& bounds = _meshes->items.getPtr(ii)->bounds;
+					const Aabb& bounds = _meshes->nodes.getPtr()->bounds;
 					farPlane = max(farPlane, length(sub(getCenter(bounds), position)) + length(getExtents(bounds)) + 1.0f);
 				}
 				float projection[16];
@@ -2412,20 +2536,26 @@ namespace frost
 					bgfx::setState(BGFX_STATE_WRITE_RGB);
 					bgfx::submit(kRenderPassEnvironment, _environment->sky);
 				});
+				MeshPass passes[6];
+				float views[6][16];
 				for (uint8_t face = 0; face < 6; ++face)
 				{
-					float view[16], viewProjection[16];
+					float* view = views[face];
+					float viewProjection[16];
 					cubeView(view, position, face);
 					mtxMul(viewProjection, view, projection);
-					Plane frustum[6] = { InitNone, InitNone, InitNone, InitNone, InitNone, InitNone };
+					Plane* frustum = passes[face].planes;
 					buildFrustumPlanes(frustum, viewProjection, bgfx::getCaps()->homogeneousDepth);
-					MeshPass pass;
+					MeshPass& pass = passes[face];
 					pass.view = kRenderPassEnvironment;
 					pass.programs[0] = _environment->capture;
 					pass.instancedPrograms[0] = _environment->instanced;
 					pass.state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS;
 					pass.flags = MeshPass::IndependentView;
 					pass.frustum = frustum;
+					pass.sortView = view;
+					pass.nearDepth = threshold;
+					pass.depthScale = 1.0f / max(1.0f, farPlane - threshold);
 					pass.parameters = _environment->captureParameters;
 					pass.origin = position;
 					pass.minimumDistance = threshold;
@@ -2442,10 +2572,10 @@ namespace frost
 					pass.scissor[2] = pass.scissor[3] = resolution;
 					pass.lights = _environment->captureLights;
 					memCopy(pass.lightValues, lights, sizeof(lights));
-					gatherMeshes(*_meshes, *_draws, &pass, 1, *_graphics, _stats->environment);
-					submitMeshes(*_draws, _gbuffer->material, &pass, *_graphics, _stats->environment);
 				}
-				// Filter all six layers together, after this frame's capture, in the same sequential view.
+				gatherMeshes(*_meshes, *_draws, passes, 6, *_graphics, _stats->environment);
+				submitMeshes(*_draws, _gbuffer->material, passes, *_graphics, _stats->environment);
+				// Filter all six layers after this frame's capture.
 				for (uint8_t filter = 0; filter <= _environment->mips; ++filter)
 				{
 					uint16_t size = 16;
@@ -2463,7 +2593,7 @@ namespace frost
 					bgfx::setUniform(_environment->filterParameters, parameters);
 					bgfx::setTexture(1, _environment->captureSampler, _environment->source);
 					bgfx::setImage(0, output, 0, 6, mip, bgfx::Access::Write);
-					bgfx::dispatch(kRenderPassEnvironment, _environment->filter, (size + 7) / 8, (size + 7) / 8, 6);
+					bgfx::dispatch(kRenderPassEnvironmentFilter, _environment->filter, (size + 7) / 8, (size + 7) / 8, 6);
 				}
 				_environment->active = true;
 				_environment->entity = _entity;
