@@ -5,8 +5,10 @@
 #include "../common/common.sh"
 #include <bgfx_compute.sh>
 #include "reflection.sh"
+#include "pbr.sh"
 
 IMAGE2D_WO(s_reflectionSurfaceOutput, rgba16f, 0);
+IMAGE2D_WO(s_roughnessOutput, r32f, 4);
 SAMPLER2D(s_normal, 1);
 SAMPLER2D(s_depth, 2);
 SAMPLER2D(s_material, 3);
@@ -32,6 +34,7 @@ void main()
 	if (encoded.w < 0.5)
 	{
 		imageStore(s_reflectionSurfaceOutput, pixel, vec4_splat(2.0));
+		imageStore(s_roughnessOutput, pixel, vec4_splat(0.0));
 		return;
 	}
 	vec3 position = reflectionPosition(uv);
@@ -66,6 +69,11 @@ void main()
 
 	// Rough reflectors filter normal detail spatially; smooth reflectors retain their mapped normal.
 	float roughness = texture2DLod(s_material, uv, 0.0).g;
+	// Match fullscreen quad derivatives, including boundaries between rasterized primitives.
+	vec3 normalDx = normalize(decodeNormalUint(neighbors[(pixel.x & 1) == 0 ? 1 : 0].xyz)) - normal;
+	vec3 normalDy = normalize(decodeNormalUint(neighbors[(pixel.y & 1) == 0 ? 3 : 2].xyz)) - normal;
+	float filteredRoughness = u_reflectionSettings.x > 0.5 ? filterSpecularRoughness(normalDx, normalDy, roughness) : roughness;
+	imageStore(s_roughnessOutput, pixel, vec4(filteredRoughness, 0.0, 0.0, 0.0));
 	float blend = smoothstep(0.2, 0.75, roughness);
 	BRANCH if (blend > 0.0)
 	{

@@ -3,6 +3,11 @@
  * License: See LICENSE in the project root.
  */
 
+#ifndef FROST_REFLECTION_SH_HEADER_GUARD
+#define FROST_REFLECTION_SH_HEADER_GUARD
+
+uniform vec4 u_reflectionSettings; // Specular AA, mirror ray roughness fade start/end, emission.
+
 vec2 reflectionEncodeNormal(vec3 _normal)
 {
 	_normal /= abs(_normal.x) + abs(_normal.y) + abs(_normal.z);
@@ -47,5 +52,7 @@ float reflectionWeight(vec4 _guide, vec3 _position, vec3 _normal, float _toleran
 // Broad specular lobes use fixed world-space captures instead of a single mirror ray.
 float reflectionRayWeight(float _roughness)
 {
-	return 1.0 - smoothstep(0.2, 0.5, _roughness);
+	return 1.0 - smoothstep(u_reflectionSettings.y, u_reflectionSettings.z, _roughness);
 }
+
+#endif // FROST_REFLECTION_SH_HEADER_GUARD

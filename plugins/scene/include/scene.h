@@ -16,7 +16,7 @@ namespace frost
 	FROST_ERROR_RESULT(kErrorSceneFormat, FROST_MAKEFOURCC('s', 'c', 'n', 'f'));
 
 	constexpr uint32_t kAssetTypeScene = FROST_MAKEFOURCC('S', 'C', 'N', 'E');
-	constexpr uint32_t kSceneVersion = 1;
+	constexpr uint32_t kSceneVersion = 2;
 
 	/// Resolved dependencies, in the order of the scene asset's dependency table.
 	///

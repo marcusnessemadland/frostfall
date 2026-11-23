@@ -95,43 +95,31 @@ namespace
 			}
 
 			// Spawn sky
-			const frost::Entity sky = _world.spawn(frost::SkyAtmosphereComponent{},
-				frost::DirectionalLightComponent{}, frost::SkyLightComponent{}).id();
+			const frost::Entity sky = _world.spawn(frost::SkyAtmosphereComponent{}, frost::SkyLightComponent{}).id();
+			_world.spawn(frost::DirectionalLightComponent{}, frost::SkyDirectionalLightComponent{ frost::SkyBody::Sun }).setParent(sky);
+			_world.spawn(frost::DirectionalLightComponent{}, frost::SkyDirectionalLightComponent{ frost::SkyBody::Moon }).setParent(sky);
 
 			// Spawn local lights
-			for (uint32_t ii = 0; ii < FROST_COUNTOF(s_lightPositions); ++ii)
-			{
-				frost::TransformComponent transform;
-				transform.position = s_lightPositions[ii];
-
-				frost::PointLightComponent light;
-				light.color = { 1.0f, 0.55f, 0.22f };
-				light.intensity = 14.0f;
-				light.range = 4.0f;
-				light.sourceRadius = 0.25f; // Clip the current opaque glass shell; translucent glass will be rendered separately.
-
-				_world.spawn(transform, light);
-			}
+			//for (uint32_t ii = 0; ii < FROST_COUNTOF(s_lightPositions); ++ii)
+			//{
+			//	frost::TransformComponent transform;
+			//	transform.position = s_lightPositions[ii];
+//
+			//	frost::PointLightComponent light;
+			//	light.color = { 1.0f, 0.55f, 0.22f };
+			//	light.intensity = 14.0f;
+			//	light.range = 4.0f;
+			//	light.sourceRadius = 0.25f; // Clip the current opaque glass shell; translucent glass will be rendered separately.
+//
+			//	_world.spawn(transform, light);
+			//}
 
 			// Modify shadow params TODO: I dont like this
-			frost::SunShadowResource* shadows = _world.getResourceMut<frost::SunShadowResource>();
-			shadows->light = sky;
+			frost::DirectionalShadowSettings* shadows = &_world.getResourceMut<frost::GraphicsSettings>()->directionalShadow;
+			shadows->resolution = 2048;
 			shadows->distanceScale = 1.0f / 3.0f;
 		}
 
-		static void update(frost::QueryT<const frost::SkyAtmosphereComponent&, frost::DirectionalLightComponent&> _skies)
-		{
-			_skies.each([](const frost::SkyAtmosphereComponent& _sky, frost::DirectionalLightComponent& _light)
-			{
-				// Check if sun is up or moon
-				const bool sun = frost::dot(_sky.sunDirection, { 0.0f, 1.0f, 0.0f })
-					>= frost::dot(_sky.moonDirection, { 0.0f, 1.0f, 0.0f });
-
-				// Update directional light based on desired sun/moon direction
-				_light.direction = sun ? _sky.sunDirection : _sky.moonDirection;
-				_light.color = sun ? _sky.sunColor : _sky.moonColor;
-			});
-		}
 	};
 
 } // namespace

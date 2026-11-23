@@ -3,6 +3,14 @@
  * License: See LICENSE in the project root.
  */
 
+// Integrate unresolved normal detail into the specular lobe, including polished materials.
+float filterSpecularRoughness(vec3 _dx, vec3 _dy, float _roughness)
+{
+	float variance = 0.25 * (dot(_dx, _dx) + dot(_dy, _dy));
+	float alpha = _roughness * _roughness;
+	return sqrt(sqrt(min(1.0, alpha * alpha + min(variance * 2.0, 0.12))));
+}
+
 vec3 evaluatePbr(vec3 _normal, vec3 _view, vec3 _light, vec3 _baseColor, float _metallic, float _roughness)
 {
 	float NoL = saturate(dot(_normal, _light));
@@ -39,5 +47,5 @@ vec3 evaluateIndirectSpecular(vec3 _radiance, float _NoV, vec3 _f0, float _rough
 	vec4 r = _roughness * vec4(-1.0, -0.0275, -0.572, 0.022) + vec4(1.0, 0.0425, 1.04, -0.04);
 	float a004 = min(r.x * r.x, exp2(-9.28 * _NoV)) * r.x + r.y;
 	vec2 brdf = vec2(-1.04, 1.04) * a004 + r.zw;
-	return _radiance * (_f0 * brdf.x + brdf.y);
+	return _radiance * max(_f0 * brdf.x + brdf.y, vec3_splat(0.0));
 }

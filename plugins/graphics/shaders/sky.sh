@@ -5,6 +5,7 @@
  */
 
 uniform vec4 u_sunDirection;
+uniform vec4 u_sunTint; // Source tint RGB and intensity; sky luminance already includes intensity.
 uniform vec4 u_skyLuminanceXYZ;
 uniform vec4 u_perezCoeff[5];
 uniform vec4 u_parameters; // sun size, sun bloom, debug view, unused.
@@ -24,9 +25,9 @@ vec3 perez(float _cosTheta, float _cosGamma)
 
 vec3 evaluateSkySource(vec3 _direction, vec3 _source, vec3 _luminanceXYZ, float _chromaticity)
 {
-	if (_luminanceXYZ.y <= 0.0) { return vec3_splat(0.0); }
-	// Keep the existing lower-hemisphere fill and guard the daylight fit at the horizon.
-	_direction.y = abs(_direction.y);
+	// The planet blocks the sky below the horizon. Mirroring it into the lower
+	// hemisphere injects unoccluded light beneath terrain and through open bounds.
+	if (_luminanceXYZ.y <= 0.0 || _direction.y < 0.0) { return vec3_splat(0.0); }
 	_source = normalize(vec3(_source.x, max(_source.y, 0.001), _source.z));
 	float sum = max(_luminanceXYZ.x + _luminanceXYZ.y + _luminanceXYZ.z, 0.000001);
 	vec3 xyY = vec3(_luminanceXYZ.xy / sum, _luminanceXYZ.y);
@@ -47,5 +48,5 @@ vec3 evaluateMoonSky(vec3 _direction)
 vec3 evaluateSky(vec3 _direction)
 {
 	return evaluateSkySource(_direction, u_sunDirection.xyz, u_skyLuminanceXYZ.xyz, 1.0)
-		+ evaluateMoonSky(_direction);
+		* u_sunTint.rgb + evaluateMoonSky(_direction);
 }

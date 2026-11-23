@@ -12,6 +12,7 @@ $input v_texcoord0
 SAMPLER2D(s_normal, 0);
 SAMPLER2D(s_albedo, 1);
 SAMPLER2D(s_material, 2);
+SAMPLER2D(s_roughness, 11);
 SAMPLER2D(s_emissive, 3);
 SAMPLER2D(s_depth, 4);
 uniform vec4 u_sunDirection;
@@ -38,7 +39,8 @@ void main()
 	vec3 light = u_sunDirection.xyz;
 	vec3 baseColor = texture2D(s_albedo, v_texcoord0).rgb;
 	vec3 parameters = texture2D(s_material, v_texcoord0).rgb;
+	float roughness = texture2D(s_roughness, v_texcoord0).r;
 	// Material occlusion is reserved for indirect illumination.
-	gl_FragColor = vec4(evaluatePbr(normal, view, light, baseColor, parameters.r, parameters.g)
-		* u_sunLuminance.rgb * shadowVisibility(position, normal), 0.0);
+	gl_FragColor = vec4(evaluatePbr(normal, view, light, baseColor, parameters.r, roughness)
+		* u_sunLuminance.rgb * shadowVisibility(position, normal, int(u_shadowSelection.x)), 0.0);
 }

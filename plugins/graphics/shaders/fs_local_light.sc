@@ -11,6 +11,7 @@ $input v_texcoord0
 SAMPLER2D(s_normal, 0);
 SAMPLER2D(s_albedo, 1);
 SAMPLER2D(s_material, 2);
+SAMPLER2D(s_roughness, 11);
 SAMPLER2D(s_depth, 4);
 SAMPLERCUBEARRAY(s_pointShadows, 6);
 SAMPLER2DARRAY(s_spotShadows, 7);
@@ -92,6 +93,7 @@ void main()
 	vec3 view = normalize(mix(u_sceneCamera.xyz - position, -u_sceneDirection.xyz, u_sceneCamera.w));
 	vec3 baseColor = texture2D(s_albedo, v_texcoord0).rgb;
 	vec3 parameters = texture2D(s_material, v_texcoord0).rgb;
+	float roughness = texture2D(s_roughness, v_texcoord0).r;
 	vec3 color = vec3_splat(0.0);
 	float radius2 = u_localLight[5].y * u_localLight[5].y;
 	if (u_localLight[1].w > 1.5)
@@ -107,7 +109,7 @@ void main()
 				vec3 sampleDirection = sampleDelta * inversesqrt(sampleDistance2);
 				float facing = dot(-sampleDirection, u_localLight[2].xyz);
 				if (u_localLight[5].z > 0.5) { facing = abs(facing); }
-				color += evaluatePbr(normal, view, sampleDirection, baseColor, parameters.r, parameters.g)
+				color += evaluatePbr(normal, view, sampleDirection, baseColor, parameters.r, roughness)
 					* max(0.0, facing) / max(sampleDistance2, radius2);
 			}
 		}
@@ -115,7 +117,7 @@ void main()
 	}
 	else
 	{
-		color = evaluatePbr(normal, view, direction, baseColor, parameters.r, parameters.g) / max(distance2, radius2);
+		color = evaluatePbr(normal, view, direction, baseColor, parameters.r, roughness) / max(distance2, radius2);
 	}
 	gl_FragColor = vec4(color * u_localLight[1].rgb * attenuation * localVisibility(position, normal), 0.0);
 }

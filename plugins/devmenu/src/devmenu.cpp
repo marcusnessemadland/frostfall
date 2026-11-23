@@ -94,6 +94,143 @@ namespace frost
 		return *_world.emplace<DevmenuPageComponent>(_entity);
 	}
 
+	static Entity graphicsFolder(World& _world, Entity _parent, const char* _label, int32_t _order)
+	{
+		return _world.spawn(DevmenuItemComponent{ _label, _order }, DevmenuFolderComponent{}).setParent(_parent).id();
+	}
+
+	template<auto MemberT, typename ControlT = DevmenuBoolComponent>
+	static void graphicsItem(World& _world, Entity _parent, const char* _label, int32_t _order, ControlT _control = {})
+	{
+		_world.spawn(DevmenuItemComponent{ _label, _order }, _control, devmenuResource<MemberT>()).setParent(_parent);
+	}
+
+	template<auto GroupT, auto MemberT, typename ControlT>
+	static void graphicsItem(World& _world, Entity _parent, const char* _label, int32_t _order, ControlT _control)
+	{
+		using Value = typename detail::DevmenuMemberT<decltype(MemberT)>::Value;
+		const DevmenuBindingComponent binding = { {},
+			[](const World& _world, Entity) { return double((_world.getResource<GraphicsSettings>()->*GroupT).*MemberT); },
+			[](World& _world, Entity, double _value) { (_world.getResourceMut<GraphicsSettings>()->*GroupT).*MemberT = Value(_value); },
+			[](const World& _world, Entity) { return NULL != _world.getResource<GraphicsSettings>(); }
+		};
+		_world.spawn(DevmenuItemComponent{ _label, _order }, _control, binding).setParent(_parent);
+	}
+
+	template<GraphicsDebugView::Enum ViewT>
+	static void graphicsView(World& _world, Entity _parent, const char* _label, int32_t _order)
+	{
+		const DevmenuBindingComponent binding = { {},
+			[](const World& _world, Entity) { return double(ViewT == _world.getResource<GraphicsSettings>()->debugView); },
+			[](World& _world, Entity, double _value)
+			{
+				_world.getResourceMut<GraphicsSettings>()->debugView = 0.0 != _value ? ViewT : GraphicsDebugView::Final;
+			},
+			[](const World& _world, Entity) { return NULL != _world.getResource<GraphicsSettings>(); }
+		};
+		_world.spawn(DevmenuItemComponent{ _label, _order }, DevmenuBoolComponent{}, binding).setParent(_parent);
+	}
+
+	static void graphicsMenu(World& _world, Entity _root)
+	{
+		const Entity graphics = graphicsFolder(_world, _root, "Graphics", 0);
+		const Entity geometry = graphicsFolder(_world, graphics, "Geometry", 0);
+		graphicsItem<&GraphicsSettings::instancing>(_world, geometry, "Instancing", 0);
+		graphicsItem<&GraphicsSettings::frustumCulling>(_world, geometry, "Frustum culling", 1);
+		graphicsItem<&GraphicsSettings::lods>(_world, geometry, "LODs", 2);
+		graphicsItem<&GraphicsSettings::lodPixels>(_world, geometry, "LOD pixels", 3, DevmenuFloatComponent{ 0, 8, 512, 8, 0 });
+		graphicsItem<&GraphicsSettings::normalMapping>(_world, geometry, "Normal mapping", 4);
+		graphicsItem<&GraphicsSettings::specularAntialiasing>(_world, geometry, "Specular antialiasing", 5);
+
+		const Entity lighting = graphicsFolder(_world, graphics, "Lighting", 1);
+		graphicsItem<&GraphicsSettings::directionalLights>(_world, lighting, "Directional lights", 0);
+		graphicsItem<&GraphicsSettings::localLights>(_world, lighting, "Local lights", 1);
+		graphicsItem<&GraphicsSettings::emissiveLighting>(_world, lighting, "Emissive lighting", 2);
+		const Entity sun = graphicsFolder(_world, lighting, "Directional shadows", 3);
+		graphicsItem<&GraphicsSettings::directionalShadows>(_world, sun, "Enabled", 0);
+		graphicsItem<&GraphicsSettings::directionalShadow, &DirectionalShadowSettings::maxLights>(_world, sun, "Shadowed lights", 10, DevmenuIntComponent{ 0, 0, 2, 1 });
+		graphicsItem<&GraphicsSettings::directionalShadow, &DirectionalShadowSettings::resolution>(_world, sun, "Resolution", 1, DevmenuIntComponent{ 0, 64, 4096, 64 });
+		graphicsItem<&GraphicsSettings::directionalShadow, &DirectionalShadowSettings::distance>(_world, sun, "Distance", 2, DevmenuFloatComponent{ 0, 1, 2000, 5, 0 });
+		graphicsItem<&GraphicsSettings::directionalShadow, &DirectionalShadowSettings::distanceScale>(_world, sun, "Distance scale", 3, DevmenuFloatComponent{ 0, 0.1, 4, 0.05, 2 });
+		graphicsItem<&GraphicsSettings::directionalShadow, &DirectionalShadowSettings::splitLambda>(_world, sun, "Split lambda", 4, DevmenuFloatComponent{ 0, 0, 1, 0.05, 2 });
+		graphicsItem<&GraphicsSettings::directionalShadow, &DirectionalShadowSettings::casterDistance>(_world, sun, "Caster distance", 5, DevmenuFloatComponent{ 0, 0, 2000, 5, 0 });
+		graphicsItem<&GraphicsSettings::directionalShadow, &DirectionalShadowSettings::depthBias>(_world, sun, "Depth bias", 6, DevmenuFloatComponent{ 0, 0, 0.05, 0.0005, 4 });
+		graphicsItem<&GraphicsSettings::directionalShadow, &DirectionalShadowSettings::normalBias>(_world, sun, "Normal bias", 7, DevmenuFloatComponent{ 0, 0, 5, 0.05, 2 });
+		graphicsItem<&GraphicsSettings::directionalShadow, &DirectionalShadowSettings::blend>(_world, sun, "Cascade blend", 8, DevmenuFloatComponent{ 0, 0, 0.3, 0.01, 2 });
+		graphicsItem<&GraphicsSettings::directionalShadow, &DirectionalShadowSettings::filterRadius>(_world, sun, "Filter radius", 9, DevmenuFloatComponent{ 0, 0, 4, 0.1, 1 });
+		const Entity local = graphicsFolder(_world, lighting, "Local shadows", 4);
+		graphicsItem<&GraphicsSettings::localShadows>(_world, local, "Enabled", 0);
+		graphicsItem<&GraphicsSettings::localShadow, &LocalShadowResource::resolution>(_world, local, "Resolution", 1, DevmenuIntComponent{ 0, 64, 2048, 64 });
+		graphicsItem<&GraphicsSettings::localShadow, &LocalShadowResource::maxLights>(_world, local, "Shadowed lights", 2, DevmenuIntComponent{ 0, 0, 30, 1 });
+		graphicsItem<&GraphicsSettings::localShadow, &LocalShadowResource::depthBias>(_world, local, "Depth bias", 3, DevmenuFloatComponent{ 0, 0, 0.05, 0.0005, 4 });
+		graphicsItem<&GraphicsSettings::localShadow, &LocalShadowResource::normalBias>(_world, local, "Normal bias", 4, DevmenuFloatComponent{ 0, 0, 0.25, 0.005, 3 });
+
+		const Entity gi = graphicsFolder(_world, graphics, "Global illumination", 2);
+		graphicsItem<&GraphicsSettings::globalIllumination>(_world, gi, "Enabled", 0);
+		graphicsItem<&GraphicsSettings::diffuseGi>(_world, gi, "Diffuse GI", 1);
+		graphicsItem<&GraphicsSettings::glossyGi>(_world, gi, "Glossy GI", 2);
+		const Entity diffuse = graphicsFolder(_world, gi, "Diffuse probes", 3);
+		graphicsItem<&GraphicsSettings::giRaysPerProbe>(_world, diffuse, "Rays per probe", 0, DevmenuIntComponent{ 0, 32, 256, 16 });
+		graphicsItem<&GraphicsSettings::giHysteresis>(_world, diffuse, "History weight", 1, DevmenuFloatComponent{ 0, 0, 0.995, 0.005, 3 });
+		graphicsItem<&GraphicsSettings::giNormalBias>(_world, diffuse, "Normal bias", 2, DevmenuFloatComponent{ 0, 0, 1, 0.005, 3 });
+		graphicsItem<&GraphicsSettings::giViewBias>(_world, diffuse, "View bias", 3, DevmenuFloatComponent{ 0, 0, 1, 0.005, 3 });
+		graphicsItem<&GraphicsSettings::giDistanceSharpness>(_world, diffuse, "Distance sharpness", 4, DevmenuFloatComponent{ 0, 1, 64, 1, 0 });
+		const Entity glossy = graphicsFolder(_world, gi, "Glossy reflections", 4);
+		graphicsItem<&GraphicsSettings::glossyRayFadeStart>(_world, glossy, "Ray fade start roughness", 0, DevmenuFloatComponent{ 0, 0, 0.99, 0.01, 2 });
+		graphicsItem<&GraphicsSettings::glossyRayFadeEnd>(_world, glossy, "Ray fade end roughness", 1, DevmenuFloatComponent{ 0, 0.01, 1, 0.01, 2 });
+
+		const Entity sky = graphicsFolder(_world, graphics, "Sky", 3);
+		graphicsItem<&GraphicsSettings::skyBackground>(_world, sky, "Background", 0);
+		graphicsItem<&GraphicsSettings::skyLighting>(_world, sky, "Sky lighting", 1);
+		graphicsItem<&GraphicsSettings::pauseSky>(_world, sky, "Pause time", 2);
+		graphicsItem<&GraphicsSettings::skyTimeScale>(_world, sky, "Time scale", 3, DevmenuFloatComponent{ 0, 0, 100, 0.25, 2 });
+		graphicsItem<&GraphicsSettings::skyResolutionScale>(_world, sky, "Capture resolution scale", 4, DevmenuFloatComponent{ 0, 0.125, 1, 0.125, 3 });
+
+		const Entity output = graphicsFolder(_world, graphics, "Output", 4);
+		graphicsItem<&GraphicsSettings::exposureBias>(_world, output, "Exposure bias (EV)", 0, DevmenuFloatComponent{ 0, -10, 10, 0.25, 2 });
+		graphicsItem<&GraphicsSettings::toneMapping>(_world, output, "Tone mapping", 1);
+		graphicsItem<&GraphicsSettings::preventBanding>(_world, output, "Dither", 2);
+		graphicsItem<&GraphicsSettings::statistics>(_world, output, "Renderer statistics overlay", 3);
+
+		const Entity debug = graphicsFolder(_world, graphics, "Debug views", 5);
+		graphicsView<GraphicsDebugView::Final>(_world, debug, "Final image", 0);
+		graphicsItem<&GraphicsSettings::debugDepth>(_world, debug, "Depth range", 1, DevmenuFloatComponent{ 0, 0.1, 2000, 1, 1 });
+		graphicsItem<&GraphicsSettings::debugExposure>(_world, debug, "Debug exposure (EV)", 2, DevmenuFloatComponent{ 0, -20, 20, 0.5, 1 });
+		graphicsItem<&GraphicsSettings::debugMip>(_world, debug, "Mip level", 3, DevmenuIntComponent{ 0, 0, 12, 1 });
+		graphicsItem<&GraphicsSettings::debugShadowLight>(_world, debug, "Directional shadow slot", 10, DevmenuIntComponent{ 0, 0, 1, 1 });
+		const Entity buffers = graphicsFolder(_world, debug, "G-buffer", 4);
+		graphicsView<GraphicsDebugView::BaseColor>(_world, buffers, "Base color", 0);
+		graphicsView<GraphicsDebugView::ShadingNormal>(_world, buffers, "Shading normals", 1);
+		graphicsView<GraphicsDebugView::GeometricNormal>(_world, buffers, "Geometric normals", 2);
+		graphicsView<GraphicsDebugView::Depth>(_world, buffers, "Linear depth", 3);
+		graphicsView<GraphicsDebugView::Metallic>(_world, buffers, "Metallic", 4);
+		graphicsView<GraphicsDebugView::Roughness>(_world, buffers, "Filtered roughness", 5);
+		graphicsView<GraphicsDebugView::Occlusion>(_world, buffers, "Material occlusion", 6);
+		graphicsView<GraphicsDebugView::Emissive>(_world, buffers, "Emissive", 7);
+		const Entity terms = graphicsFolder(_world, debug, "Lighting", 5);
+		graphicsView<GraphicsDebugView::DirectLighting>(_world, terms, "Direct lighting", 0);
+		graphicsView<GraphicsDebugView::DiffuseGi>(_world, terms, "Diffuse GI", 1);
+		graphicsView<GraphicsDebugView::GlossyGi>(_world, terms, "Glossy GI", 2);
+		graphicsView<GraphicsDebugView::Irradiance>(_world, terms, "Unmodulated irradiance", 3);
+		const Entity probes = graphicsFolder(_world, debug, "Diffuse probes", 6);
+		graphicsItem<&GraphicsSettings::debugProbes>(_world, probes, "Show probes", -3);
+		graphicsItem<&GraphicsSettings::debugProbeRadius>(_world, probes, "Probe radius", -2, DevmenuFloatComponent{ 0, 0.025, 5, 0.025, 3 });
+		graphicsItem<&GraphicsSettings::debugProbeDepthTest>(_world, probes, "Depth test", -1);
+		graphicsView<GraphicsDebugView::ProbeIrradiance>(_world, probes, "Irradiance atlas", 0);
+		graphicsView<GraphicsDebugView::ProbeDistance>(_world, probes, "Distance atlas", 1);
+		graphicsView<GraphicsDebugView::ProbeVariance>(_world, probes, "Distance standard deviation", 2);
+		const Entity reflections = graphicsFolder(_world, debug, "Glossy", 7);
+		graphicsView<GraphicsDebugView::GlossyRays>(_world, reflections, "Mirror ray radiance", 0);
+		graphicsView<GraphicsDebugView::GlossyFiltered>(_world, reflections, "Filtered radiance", 1);
+		graphicsView<GraphicsDebugView::GlossyCoverage>(_world, reflections, "Coverage", 2);
+		const Entity shadows = graphicsFolder(_world, debug, "Shadows", 8);
+		graphicsView<GraphicsDebugView::DirectionalShadows>(_world, shadows, "Directional shadow atlas", 0);
+		graphicsView<GraphicsDebugView::LocalShadows>(_world, shadows, "Local shadow atlas", 1);
+		graphicsView<GraphicsDebugView::ShadowCascades>(_world, shadows, "Cascade selection", 2);
+		const Entity radiance = graphicsFolder(_world, debug, "Sky", 9);
+		graphicsView<GraphicsDebugView::SkyRadiance>(_world, radiance, "Sky radiance", 0);
+	}
+
 	struct DevmenuSystem
 	{
 		static void startup(World& _world, ResMutT<DevmenuDesc> _menu, ResMutT<DevmenuState> _state)
@@ -112,6 +249,7 @@ namespace frost
 				.setParent(_state->panel).id();
 			_state->list = _world.spawn(UiNodeComponent{ .order = 2 }, UiLayoutComponent{ UiLayoutComponent::Column, 0, 2 })
 				.setParent(_state->panel).id();
+			graphicsMenu(_world, _menu->root);
 		}
 
 		static void refresh(World& _world)
@@ -290,10 +428,6 @@ namespace frost
 					snprintf(value, sizeof(value), ": %.*f", int(min(number->precision, uint8_t(8))), number->value);
 				}
 				if (_state.editing == _item && (uint32_t(_time.elapsed * 3.0) & 1)) { value[0] = '\0'; }
-				if (const auto* readout = _world.get<DevmenuReadoutComponent>(_item))
-				{
-					snprintf(value, sizeof(value), ": %s", readout->text.getCPtr());
-				}
 			}
 			snprintf(buffer, sizeof(buffer), "%c%s%s%s", _selected ? '>' : ' ', label, suffix, value);
 			text.text.set(buffer);
@@ -361,6 +495,7 @@ namespace frost
 		{
 			refresh(_world);
 			input(_world, *_menu, *_state, *_input, *_time);
+			refresh(_world); // One setting may change several selection indicators.
 			draw(_world, *_menu, *_state, *_display, *_time);
 		}
 

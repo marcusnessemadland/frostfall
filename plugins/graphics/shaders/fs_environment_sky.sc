@@ -17,5 +17,6 @@ void main()
 	if (u_environmentFilter.w > 0.5) { uv.y = 1.0 - uv.y; }
 	vec2 tile = min(floor(uv * vec2(3.0, 2.0)), vec2(2.0, 1.0));
 	vec3 direction = environmentDirection(uv * vec2(3.0, 2.0) - tile, tile.x + tile.y * 3.0);
-	gl_FragColor = vec4(evaluateAtmosphere(direction), 1.0);
+	// Analytic directional lights own the sun/moon disks. GI samples their scattered sky.
+	gl_FragColor = vec4(evaluateSky(direction), 1.0);
 }

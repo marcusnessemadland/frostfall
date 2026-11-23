@@ -8,6 +8,8 @@
 #include "environment.sh"
 #include "raytrace.sh"
 #define FROST_RAY_CAPTURE 1
+#define FROST_DDGI_IRRADIANCE_SLOT 12
+#define FROST_DDGI_DISTANCE_SLOT 14
 #include "raylighting.sh"
 
 IMAGE2D_ARRAY_WO(s_reflectionCaptureOutput, rgba16f, 0);
@@ -31,7 +33,8 @@ void main()
 	hit.distance = 1e30;
 	bool found = traceRay(origin, direction, false, hit);
 	vec3 radiance;
-	BRANCH if (found) { radiance = shadeRayHit(origin, direction, hit, uint(u_reflectionProbes[2].w)); }
+	BRANCH if (found) { radiance = shadeRayHit(origin + direction * hit.distance, direction, hit, uint(u_reflectionProbes[2].w),
+		sqrt(2.0 / u_reflectionProbes[0].w), hit.distance * 2.0 / u_reflectionProbes[0].w, false); }
 	else { radiance = textureCubeLod(s_rayEnvironment, direction, 0.0).rgb * u_rayEnvironment.rgb; }
 	// Bound moments to the capture volume; a miss remains visible throughout that volume.
 	float extent = length(u_reflectionProbes[1].xyz * max(u_reflectionProbes[2].xyz, vec3_splat(2.0)));

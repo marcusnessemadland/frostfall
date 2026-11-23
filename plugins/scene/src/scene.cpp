@@ -39,6 +39,7 @@ namespace frost
 		SCENE_FIELD(DirectionalLightComponent, color, Float, 3),
 		SCENE_FIELD(DirectionalLightComponent, intensity, Float, 1),
 		SCENE_FIELD(DirectionalLightComponent, isStatic, Bool, 1),
+		SCENE_FIELD(DirectionalLightComponent, castShadows, Bool, 1),
 	};
 	static const SceneField s_sky[] = {
 		SCENE_FIELD(SkyAtmosphereComponent, time, Float, 1),
@@ -48,13 +49,9 @@ namespace frost
 		SCENE_FIELD(SkyAtmosphereComponent, turbidity, Float, 1),
 		SCENE_FIELD(SkyAtmosphereComponent, sunSize, Float, 1),
 		SCENE_FIELD(SkyAtmosphereComponent, sunBloom, Float, 1),
-		SCENE_FIELD(SkyAtmosphereComponent, sunTint, Float, 3),
-		SCENE_FIELD(SkyAtmosphereComponent, sunIntensity, Float, 1),
 		SCENE_FIELD(SkyAtmosphereComponent, moonCycle, Float, 1),
 		SCENE_FIELD(SkyAtmosphereComponent, pauseMoonCycle, Bool, 1),
 		SCENE_FIELD(SkyAtmosphereComponent, moonSize, Float, 1),
-		SCENE_FIELD(SkyAtmosphereComponent, moonIntensity, Float, 1),
-		SCENE_FIELD(SkyAtmosphereComponent, moonTint, Float, 3),
 		SCENE_FIELD(SkyAtmosphereComponent, moonTexture, Texture, 1),
 		SCENE_FIELD(SkyAtmosphereComponent, moonAlbedo, Float, 1),
 	};
@@ -94,6 +91,9 @@ namespace frost
 		SCENE_FIELD(SkyLightComponent, resolution, Uint32, 1),
 		SCENE_FIELD(SkyLightComponent, isStatic, Bool, 1),
 	};
+	static const SceneField s_skyDirectional[] = {
+		SCENE_FIELD(SkyDirectionalLightComponent, body, Uint32, 1),
+	};
 #undef SCENE_FIELD
 
 	template<typename Ty> static void sceneDefaults(void* _data) { FROST_PLACEMENT_NEW(_data, Ty)(); }
@@ -113,6 +113,7 @@ namespace frost
 		SCENE_COMPONENT(7, "SpotLight", SpotLightComponent, s_SpotLight),
 		SCENE_COMPONENT(8, "RectLight", RectLightComponent, s_RectLight),
 		SCENE_COMPONENT(9, "SkyLight", SkyLightComponent, s_SkyLight),
+		SCENE_COMPONENT(10, "SkyDirectionalLight", SkyDirectionalLightComponent, s_skyDirectional),
 	};
 #undef SCENE_COMPONENT
 
@@ -138,6 +139,7 @@ namespace frost
 	struct SceneRef
 	{
 		Guid guid;
+		uint32_t version = kSceneVersion;
 		uint32_t refCount = 0;
 		uint32_t numEntities = 0, numDependencies = 0;
 		SceneEntityData* entities = NULL;
@@ -226,14 +228,19 @@ namespace frost
 		readHE(&_reader, size, true, _err);
 		_component.schema = getSceneComponentSchema(id);
 		if (!_err->isOk() || NULL == _component.schema || size > _reader.remaining()) { return false; }
+		if (_scene.version < 2 && 5 == id)
+		{
+			FROST_ERROR_SET(_err, kErrorSceneFormat, "Rebuild this scene: sky sources now use child SkyDirectionalLight components.");
+			return false;
+		}
 		const int64_t end = _reader.getPos() + size;
 		_component.data = alloc(s_sceneContext->allocator, _component.schema->size);
 		_component.schema->defaults(_component.data);
 		for (uint32_t ii = 0; ii < _component.schema->numFields; ++ii)
 		{
 			const SceneField& field = _component.schema->fields[ii];
-			// Older light payloads omit the appended flag and retain the component default.
-			if (_reader.getPos() == end && 0 == strCmp(field.name, "isStatic")) { continue; }
+			// Older light payloads retain defaults for appended flags.
+			if (_reader.getPos() == end && (0 == strCmp(field.name, "isStatic") || 0 == strCmp(field.name, "castShadows"))) { continue; }
 			uint8_t* value = static_cast<uint8_t*>(_component.data) + field.offset;
 			for (uint32_t jj = 0; jj < field.count; ++jj)
 			{
@@ -320,12 +327,12 @@ namespace frost
 		}
 		AssetHeader header;
 		if (!readAssetHeader(_mem, &header, _err)) { return {}; }
-		if (header.type != kAssetTypeScene || header.payloadVersion != kSceneVersion
+		if (header.type != kAssetTypeScene || (header.payloadVersion != 1 && header.payloadVersion != kSceneVersion)
 			|| header.dependencyCount != _numDependencies || (_numDependencies != 0 && NULL == _dependencies))
 		{
 			FROST_ERROR_SET(_err, kErrorSceneFormat, "Unsupported scene asset or dependency count."); return {};
 		}
-		SceneRef scene; scene.guid = header.guid;
+		SceneRef scene; scene.guid = header.guid; scene.version = header.payloadVersion;
 		scene.dependencies = static_cast<SceneDependency*>(alloc(s_sceneContext->allocator, _numDependencies * sizeof(SceneDependency)));
 		for (uint32_t ii = 0; ii < _numDependencies; ++ii)
 		{

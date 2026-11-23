@@ -6,10 +6,13 @@ $input v_texcoord0
 #include "../common/common.sh"
 #include "pbr.sh"
 #include "reflection.sh"
+#define FROST_DDGI_SAMPLE 1
+#include "ddgi.sh"
 
 SAMPLER2D(s_normal, 0);
 SAMPLER2D(s_albedo, 1);
 SAMPLER2D(s_material, 2);
+SAMPLER2D(s_roughness, 11);
 SAMPLER2D(s_depth, 4);
 SAMPLER2D(s_reflection, 6);
 SAMPLER2D(s_reflectionGuide, 7);
@@ -20,7 +23,7 @@ uniform vec4 u_reflectionProbes[3];
 uniform mat4 u_invSceneViewProj;
 uniform vec4 u_sceneCamera;
 uniform vec4 u_sceneDirection;
-uniform vec4 u_reflectionResolve; // Pixel projection scale, maximum mip, unused, unused.
+uniform vec4 u_reflectionResolve; // Pixel projection scale, maximum mip, diffuse enabled, glossy enabled.
 uniform vec4 u_reflectionScreen;
 
 vec4 gatherReflection(vec2 _uv, float _mip, vec3 _position, vec3 _normal, float _tolerance)
@@ -52,7 +55,7 @@ vec3 sampleReflectionProbes(vec3 _position, vec3 _normal, vec3 _direction, float
 		vec3_splat(0.0), u_reflectionProbes[2].xyz - 1.0);
 	vec3 base = min(floor(grid), u_reflectionProbes[2].xyz - 2.0), fraction = grid - base;
 	vec3 sum = vec3_splat(0.0);
-	float weight = 0.0;
+	float weight = 0.0, support = 0.0;
 	for (int zz = 0; zz < 2; ++zz)
 	{
 		for (int yy = 0; yy < 2; ++yy)
@@ -71,13 +74,17 @@ vec3 sampleReflectionProbes(vec3 _position, vec3 _normal, vec3 _direction, float
 				visibility = smoothstep(0.2, 1.0, visibility * visibility * visibility);
 				vec3 spatial = mix(1.0 - fraction, fraction, offset);
 				float facing = saturate(dot(_normal, -delta / distance));
-				float w = spatial.x * spatial.y * spatial.z * visibility * facing * facing;
+				float w = spatial.x * spatial.y * spatial.z * facing * facing;
+				support += w;
+				w *= visibility;
 				sum += textureCubeArrayLod(s_reflectionProbes, vec4(_direction, probe), _roughness * u_reflectionProbes[1].w).rgb * w;
 				weight += w;
 			}
 		}
 	}
-	return sum / max(weight, 0.01);
+	// Visibility confidence must survive normalization of the available probes.
+	float confidence = weight / max(support, 0.0001);
+	return sum / max(weight, 0.01) * smoothstep(0.05, 0.25, confidence);
 }
 
 void main()
@@ -90,14 +97,24 @@ void main()
 	vec3 position = clipToWorld(u_invSceneViewProj, clip);
 	vec3 relative = position - u_sceneCamera.xyz;
 	vec3 view = normalize(mix(-relative, -u_sceneDirection.xyz, u_sceneCamera.w));
-	if (dot(normal, view) <= 0.0) { discard; }
 	vec3 baseColor = texture2D(s_albedo, v_texcoord0).rgb;
 	vec3 parameters = texture2D(s_material, v_texcoord0).rgb;
-	vec3 detail = normalize(decodeNormalUint(texture2D(s_normal, v_texcoord0).xyz));
-	vec3 dx = dFdx(detail), dy = dFdy(detail);
-	float variance = 0.25 * (dot(dx, dx) + dot(dy, dy)) * smoothstep(0.2, 0.6, parameters.g);
-	float alpha = parameters.g * parameters.g;
-	float roughness = max(0.045, sqrt(sqrt(min(1.0, alpha * alpha + min(variance * 2.0, 0.12)))));
+	float roughness = max(0.045, texture2D(s_roughness, v_texcoord0).r);
+	vec3 diffuse = vec3_splat(0.0);
+	if (u_reflectionResolve.z > 0.5)
+	{
+		// Diffuse uses the material normal, independently of the filtered glossy
+		// normal or its view-facing test. A grazing glossy ray must not erase GI.
+		vec3 diffuseNormal = normalize(decodeNormalUint(texture2D(s_normal, v_texcoord0).xyz));
+		vec3 irradiance = sampleDiffuseGi(position, diffuseNormal, geometric, view);
+		diffuse = u_reflectionScreen.w == 12.0 ? irradiance
+			: evaluateIndirectDiffuse(irradiance, baseColor, parameters.r) * parameters.b;
+	}
+	if (u_reflectionResolve.w < 0.5 || dot(normal, view) <= 0.0)
+	{
+		gl_FragColor = vec4(diffuse, 0.0);
+		return;
+	}
 	vec3 direction = reflect(-view, normal);
 	vec4 reflection = vec4_splat(0.0);
 	float rayWeight = reflectionRayWeight(roughness) * smoothstep(0.0, 0.1, dot(direction, geometric));
@@ -125,5 +142,5 @@ void main()
 		radiance += sampleReflectionProbes(position, geometric, direction, roughness) * (1.0 - coverage);
 	}
 	vec3 f0 = mix(vec3_splat(0.04), baseColor, parameters.r);
-	gl_FragColor = vec4(evaluateIndirectSpecular(radiance, saturate(dot(normal, view)), f0, roughness) * parameters.b, 0.0);
+	gl_FragColor = vec4(diffuse + evaluateIndirectSpecular(radiance, saturate(dot(normal, view)), f0, roughness) * parameters.b, 0.0);
 }

@@ -12,7 +12,7 @@ BUFFER_RO(b_rayMaterials, vec4, 7);
 SAMPLER2DARRAY(s_rayBaseColor, 9);
 SAMPLER2DARRAY(s_rayParameters, 10);
 SAMPLER2DARRAY(s_rayEmissive, 11);
-uniform vec4 u_rayScene; // Instance count, material texture size, origin bias, unused.
+uniform vec4 u_rayScene; // Instance count, material texture size, origin bias, pixel projection scale.
 
 struct RayHit
 {
@@ -21,6 +21,45 @@ struct RayHit
 	uint instanceIndex;
 	vec2 barycentric;
 };
+
+vec3 rayHitGeometricNormal(RayHit _hit)
+{
+	uvec4 primitive = floatBitsToUint(b_rayTriangles[_hit.primitive]);
+	vec3 a = b_rayVertices[primitive.x * 2u].xyz;
+	vec3 n = cross(b_rayVertices[primitive.y * 2u].xyz - a, b_rayVertices[primitive.z * 2u].xyz - a);
+	uint base = _hit.instanceIndex * 4u;
+	vec3 r0 = b_rayInstances[base].xyz, r1 = b_rayInstances[base + 1u].xyz, r2 = b_rayInstances[base + 2u].xyz;
+	float orientation = dot(r0, cross(r1, r2)) < 0.0 ? -1.0 : 1.0;
+	return normalize((r0 * n.x + r1 * n.y + r2 * n.z) * orientation);
+}
+
+bool rayHitBackface(RayHit _hit, vec3 _direction)
+{
+	uvec4 primitive = floatBitsToUint(b_rayTriangles[_hit.primitive]);
+	uint material = uint(b_rayInstances[_hit.instanceIndex * 4u + 3u].y) + primitive.w;
+	return b_rayMaterials[material * 2u].z < 0.5 && dot(rayHitGeometricNormal(_hit), _direction) > 0.0;
+}
+
+vec3 rayWorldVector(uint _base, vec3 _local)
+{
+	vec3 r0 = b_rayInstances[_base].xyz, r1 = b_rayInstances[_base + 1u].xyz, r2 = b_rayInstances[_base + 2u].xyz;
+	vec3 cofactor = cross(r1, r2);
+	return (cofactor * _local.x + cross(r2, r0) * _local.y + cross(r0, r1) * _local.z) / dot(r0, cofactor);
+}
+
+float rayMaterialLod(RayHit _hit, vec3 _direction, float _radius)
+{
+	uvec4 primitive = floatBitsToUint(b_rayTriangles[_hit.primitive]);
+	vec4 a = b_rayVertices[primitive.x * 2u], b = b_rayVertices[primitive.y * 2u], c = b_rayVertices[primitive.z * 2u];
+	vec2 uv0 = vec2(a.w, b_rayVertices[primitive.x * 2u + 1u].w);
+	vec2 uv1 = vec2(b.w, b_rayVertices[primitive.y * 2u + 1u].w) - uv0;
+	vec2 uv2 = vec2(c.w, b_rayVertices[primitive.z * 2u + 1u].w) - uv0;
+	uint base = _hit.instanceIndex * 4u;
+	vec3 area = cross(rayWorldVector(base, b.xyz - a.xyz), rayWorldVector(base, c.xyz - a.xyz));
+	float density = sqrt(abs(uv1.x * uv2.y - uv1.y * uv2.x) / max(length(area), 0.00000001));
+	float grazing = max(0.1, abs(dot(rayHitGeometricNormal(_hit), _direction)));
+	return clamp(log2(max(1.0, 2.0 * _radius * density * u_rayScene.y / grazing)), 0.0, log2(u_rayScene.y));
+}
 
 vec2 rayUv(vec2 _uv, float _sampler)
 {

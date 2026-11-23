@@ -60,12 +60,6 @@ namespace frost
 		bool readOnly = false;
 	};
 
-	/// TODO: I dont think the devmenu should have this, we should have a wrapper for bgfx::dbgPrint instead for these things
-	struct DevmenuReadoutComponent
-	{
-		FixedString256 text;
-	};
-
 	/// TODO: Is this really needed??
 	struct DevmenuBindingComponent
 	{

@@ -7,7 +7,6 @@
 #include "sky.sh"
 
 SAMPLER2D(s_moon, 0);
-uniform vec4 u_sunTint;
 
 vec3 evaluateMoon(vec3 _direction)
 {
@@ -41,7 +40,7 @@ vec3 evaluateAtmosphere(vec3 _direction)
 	float dist = 2.0 * (1.0 - dot(direction, normalize(u_sunDirection.xyz)));
 	float sun = exp(-dist / u_parameters.y / size2) + step(dist, size2);
 	vec3 color = evaluateSky(direction) + evaluateMoon(direction)
-		+ min(sun * sun, 1.0) * u_sunTint.rgb * step(0.0, direction.y);
+		+ min(sun * sun, 1.0) * u_sunTint.rgb * u_sunTint.w * step(0.0, direction.y);
 	// Linear HDR color; the output pass handles exposure and tone mapping.
 	return color;
 }

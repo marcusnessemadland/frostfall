@@ -166,7 +166,19 @@ namespace frost
 		Vec3 direction = { 0.0f, 1.0f, 0.0f }; //!< World direction toward the light; must be finite and nonzero.
 		Vec3 color = { 1.0f, 1.0f, 1.0f };     //!< Linear RGB illumination, clamped nonnegative.
 		float intensity = 1.0f;						 //!< Nonnegative multiplier; zero disables the light.
+		bool castShadows = true;
 		bool isStatic = false; //!< Generate shadows once; keep false for moving lights or cameras.
+	};
+
+	/// A sky-bound directional light uses its parent SkyAtmosphereComponent.
+	struct SkyBody
+	{
+		enum Enum : uint32_t { Sun, Moon, Count };
+	};
+
+	struct SkyDirectionalLightComponent
+	{
+		SkyBody::Enum body = SkyBody::Sun;
 	};
 
 	/// Local lights use TransformComponent. Local +Z is the emission direction.
@@ -217,6 +229,7 @@ namespace frost
 		bool isStatic = false; //!< Capture and filter the environment once; false updates every frame.
 	};
 
+	/// Local shadow configuration, owned by GraphicsSettings.
 	struct LocalShadowResource
 	{
 		uint16_t resolution = 512; //!< Clamped to the device's atlas size limit.
@@ -225,10 +238,10 @@ namespace frost
 		float normalBias = 0.01f;
 	};
 
-	/// Cascaded directional shadows.
-	struct SunShadowResource
+	/// Cascaded directional shadow configuration, owned by GraphicsSettings.
+	struct DirectionalShadowSettings
 	{
-		Entity light;
+		uint8_t maxLights = 2; //!< Stable directional shadow slots, 0..2.
 		uint16_t resolution = 1024;
 		float distance = 150.0f;
 		float distanceScale = 1.0f; //!< Scales receiver distance before fitting all cascades.
@@ -265,24 +278,12 @@ namespace frost
 		float turbidity = 2.15f;
 		float sunSize = 0.03f;
 		float sunBloom = 3.0f;
-		Vec3 sunTint = { 1.0f, 1.0f, 1.0f };
-		float sunIntensity = 1.0f;
 		float moonCycle = 0.5f;
 		bool pauseMoonCycle = false;
 		float moonSize = 0.52f;
-		float moonIntensity = 1.0f;
-		Vec3 moonTint = { 1.0f, 1.0f, 1.0f };
 		TextureHandle moonTexture;
 		float moonAlbedo = 1.0f;
-		Vec3 sunDirection = { 0.0f, 1.0f, 0.0f };
-		Vec3 sunColor = { 0.0f, 0.0f, 0.0f };
-		Vec3 moonDirection = { 0.0f, -1.0f, 0.0f };
-		Vec3 moonLightDirection = { 0.0f, 1.0f, 0.0f };
-		Vec3 moonUp = { 0.0f, 1.0f, 0.0f };
-		Vec3 moonColor = { 0.0f, 0.0f, 0.0f };
-		float moonIlluminance = 0.0f;
-		float moonElevation = -90.0f;
-		float moonPhaseBrightness = 1.0f;
+
 	};
 
 	///
@@ -430,7 +431,21 @@ namespace frost
 		uint16_t maxTextures = 4096;
 		uint16_t maxMaterials = 4096;
 
-		bool preventBanding = true;
+		uint16_t giProbes[3] = { 16, 8, 16 }; //!< Fixed world-space grid fitted to the startup scene.
+	};
+
+	struct GraphicsDebugView
+	{
+		// Values are shared with fs_graphics_debug.sc and the GI resolve shader.
+		enum Enum
+		{
+			Final, BaseColor, ShadingNormal, GeometricNormal, Depth, Metallic, Roughness, Occlusion, Emissive,
+			DirectLighting, DiffuseGi, GlossyGi, Irradiance,
+			ProbeIrradiance, ProbeDistance, ProbeVariance,
+			GlossyRays, GlossyFiltered, GlossyCoverage,
+			DirectionalShadows, LocalShadows, ShadowCascades, SkyRadiance,
+			Count
+		};
 	};
 
 	/// Runtime graphics configuration read every frame.
@@ -443,6 +458,47 @@ namespace frost
 		bool frustumCulling = true;
 		bool lods = true;
 		float lodPixels = 128.0f; //!< Projected diameter below which detail starts decreasing.
+		bool normalMapping = true;
+		bool specularAntialiasing = true;
+
+		bool directionalLights = true;
+		bool localLights = true;
+		bool emissiveLighting = true;
+		bool directionalShadows = true;
+		bool localShadows = true;
+		DirectionalShadowSettings directionalShadow;
+		LocalShadowResource localShadow;
+
+		bool globalIllumination = true; //!< Disables both indirect terms; direct lighting remains.
+		bool diffuseGi = true; //!< Primary diffuse term; probes still light glossy hits.
+		bool glossyGi = true;
+		uint16_t giRaysPerProbe = 192; //!< 32..256 rays; storage is reserved at startup/viewport resize.
+		float giHysteresis = 0.97f; //!< Retained probe history; zero replaces it each frame.
+		float giNormalBias = 0.05f; //!< World units, relative to geometric normals.
+		float giViewBias = 0.02f;
+		float giDistanceSharpness = 50.0f; //!< Power-cosine visibility filter, 1..64.
+		float glossyRayFadeStart = 0.2f; //!< Perceptual roughness where mirror rays start fading to captures.
+		float glossyRayFadeEnd = 0.5f;
+
+		bool skyBackground = true;
+		bool skyLighting = true;
+		bool pauseSky = false;
+		float skyTimeScale = 1.0f; //!< Multiplies the atmosphere component's hours per second.
+		float skyResolutionScale = 1.0f; //!< Capture quality relative to the sky light's resolution.
+
+		float exposureBias = 0.0f; //!< EV offset applied to the active camera.
+		bool toneMapping = true;
+		bool preventBanding = true;
+		bool statistics = true; //!< Renderer-owned performance overlay; independent of devmenu.
+
+		GraphicsDebugView::Enum debugView = GraphicsDebugView::Final;
+		bool debugProbes = false; //!< Draw DDGI probes with their directional irradiance.
+		float debugProbeRadius = 0.15f; //!< World-space radius of the probe visualization.
+		bool debugProbeDepthTest = true; //!< Hide probes behind scene geometry.
+		float debugDepth = 25.0f; //!< World-space depth/distance range for diagnostic views.
+		float debugExposure = 0.0f; //!< Absolute EV for HDR diagnostic views.
+		uint8_t debugMip = 0;
+		uint8_t debugShadowLight = 0; //!< Directional shadow slot shown by the cascade view, 0..1.
 	};
 
 	/// Submitted work for the most recently prepared frame.
@@ -475,6 +531,7 @@ namespace frost
 	struct GraphicsPlugin : PluginI
 	{
 		virtual void build(App& _app) override;
+		virtual void finish(App& _app) override;
 	};
 
 } // namespace frost
