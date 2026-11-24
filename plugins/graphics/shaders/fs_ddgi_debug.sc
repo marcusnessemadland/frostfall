@@ -42,7 +42,7 @@ void main()
 	{
 		vec2 atlas = ddgiUv(ddgiTile(ddgiCell(uint(v_probe.w + 0.5))), normal, 6.0);
 		vec3 encoded = texture2DLod(s_ddgiIrradiance, atlas, 0.0).rgb;
-		color = encoded * encoded;
+		color = ddgiDecodeIrradiance(encoded);
 	}
 	gl_FragDepth = depth;
 	gl_FragColor = vec4(color, 1.0);

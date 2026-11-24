@@ -79,7 +79,7 @@ void main()
 		vec3 radiance = found ? vec3_splat(0.0) : textureCubeLod(s_rayEnvironment, direction, 0.0).rgb * u_rayEnvironment.rgb;
 		float distance = hit.distance;
 		// Probe distances are normalized before storing in the half-float work buffer.
-		if (probeRay) { distance = min(distance * (backface ? 0.2 : 1.0) / u_ddgiGrid[0].w, 1.0); }
+		if (probeRay) { distance = min(distance * (backface ? 0.2 : 1.0) / u_ddgiGrid[0].w, 1.0) * (backface ? -1.0 : 1.0); }
 		result = vec4(min(radiance, vec3_splat(60000.0)), min(distance, 60000.0));
 	}
 	imageStore(s_reflectionOutput, ivec3(pixel, 0), record);

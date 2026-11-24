@@ -19,6 +19,7 @@
 #include <bx/file.h>
 
 #include <string>
+#include <cstring>
 
 #define BIMG_TEXTUREC_VERSION_MAJOR 1
 #define BIMG_TEXTUREC_VERSION_MINOR 18
@@ -35,6 +36,7 @@ struct Options
 	bimg::LightingModel::Enum radiance = bimg::LightingModel::Count;
 	bool mips      = false;
 	bool normalMap = false;
+	bool normalMapRG = false;
 	bool equirect  = false;
 	bool strip     = false;
 	bool iqa       = false;
@@ -42,6 +44,7 @@ struct Options
 	bool sdf       = false;
 	bool alphaTest = false;
 	bool linear    = false;
+	uint8_t channels[4] = { 0, 1, 2, 3 };
 };
 
 void imageRgba32fNormalize(void* _dst, uint32_t _width, uint32_t _height, uint32_t _srcPitch, const void* _src)
@@ -101,6 +104,27 @@ bimg::ImageContainer* convert(bx::AllocatorI* _allocator, const void* _inputData
 	if (!_err->isOk() )
 	{
 		return NULL;
+	}
+	if (NULL != input && (_options.channels[0] != 0 || _options.channels[1] != 1 || _options.channels[2] != 2 || _options.channels[3] != 3))
+	{
+		bimg::ImageContainer* converted = bimg::imageConvert(_allocator, bimg::TextureFormat::RGBA32F, *input);
+		bimg::imageFree(input); input = converted;
+		if (NULL == input) { BX_ERROR_SET(_err, TEXTRUREC_ERROR, "Unable to swizzle texture channels."); return NULL; }
+		for (uint16_t side = 0; side < input->m_numLayers * (input->m_cubeMap ? 6 : 1); ++side)
+		{
+			for (uint8_t mip = 0; mip < input->m_numMips; ++mip)
+			{
+				bimg::ImageMip raw;
+				bimg::imageGetRawData(*input, side, mip, input->m_data, input->m_size, raw);
+				float* pixels = (float*)const_cast<uint8_t*>(raw.m_data);
+				for (uint32_t ii = 0; ii < raw.m_width * raw.m_height * bx::max(1u, raw.m_depth); ++ii)
+				{
+					float* pixel = pixels + ii * 4;
+					const float channels[] = { pixel[0], pixel[1], pixel[2], pixel[3], 0.0f, 1.0f };
+					for (uint8_t cc = 0; cc < 4; ++cc) { pixel[cc] = channels[_options.channels[cc]]; }
+				}
+			}
+		}
 	}
 
 	if (NULL != input)
@@ -392,7 +416,9 @@ bimg::ImageContainer* convert(bx::AllocatorI* _allocator, const void* _inputData
 								float* inout = &rgba32f[offset];
 								inout[0] = inout[0] * 2.0f - 1.0f;
 								inout[1] = inout[1] * 2.0f - 1.0f;
-								inout[2] = inout[2] * 2.0f - 1.0f;
+								inout[2] = _options.normalMapRG
+									? bx::sqrt(bx::max(0.0f, 1.0f - inout[0] * inout[0] - inout[1] * inout[1]))
+									: inout[2] * 2.0f - 1.0f;
 								inout[3] = inout[3] * 2.0f - 1.0f;
 							}
 						}
@@ -1263,12 +1289,25 @@ int main(int _argc, const char* _argv[])
 
 	options.sdf       = cmdLine.hasArg("sdf");
 	options.mips      = cmdLine.hasArg('m', "mips") || importBool("mips", false);
-	options.normalMap = cmdLine.hasArg('n', "normalmap") || importBool("normalMap", false);
+	options.normalMapRG = importBool("normalMapRG", false);
+	options.normalMap = cmdLine.hasArg('n', "normalmap") || importBool("normalMap", false) || options.normalMapRG;
 	options.equirect  = cmdLine.hasArg("equirect");
 	options.strip     = cmdLine.hasArg("strip");
 	options.iqa       = cmdLine.hasArg("iqa");
 	options.pma       = cmdLine.hasArg("pma");
 	options.linear    = cmdLine.hasArg("linear") || importBool("linear", false);
+	const auto swizzle = settings.get("swizzle");
+	if (!swizzle.isEmpty())
+	{
+		if (swizzle.getLength() != 4) { help("Swizzle requires four channels from rgba01."); return 1; }
+		const char* channels = "rgba01";
+		for (uint8_t ii = 0; ii < 4; ++ii)
+		{
+			const char* channel = std::strchr(channels, swizzle.getPtr()[ii]);
+			if (NULL == channel) { help("Swizzle requires four channels from rgba01."); return 1; }
+			options.channels[ii] = uint8_t(channel - channels);
+		}
+	}
 
 	if (options.equirect
 	&&  options.strip)

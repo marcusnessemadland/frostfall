@@ -7,6 +7,13 @@
 
 #include "reflection.sh"
 
+#define FROST_DDGI_IRRADIANCE_GAMMA 5.0
+
+vec3 ddgiDecodeIrradiance(vec3 _encoded)
+{
+	return pow(max(_encoded, vec3_splat(0.0)), vec3_splat(FROST_DDGI_IRRADIANCE_GAMMA));
+}
+
 // A single world-space volume. The octahedral tiles include a one-texel border.
 uniform vec4 u_ddgiGrid[3]; // Origin / maximum distance, spacing / rays per probe, dimensions / unused.
 uniform vec4 u_ddgiParameters; // Normal bias, view bias, distance sharpness, valid history.
@@ -29,12 +36,22 @@ vec3 ddgiPosition(uint _probe)
 	return u_ddgiGrid[0].xyz + vec3(ddgiCell(_probe)) * u_ddgiGrid[1].xyz;
 }
 
+uint ddgiFixedRays()
+{
+	return min(32u, uint(u_ddgiGrid[1].w) / 2u);
+}
+
 vec3 ddgiDirection(uint _ray)
 {
-	float z = 1.0 - 2.0 * (float(_ray) + 0.5) / u_ddgiGrid[1].w;
+	uint geometryRays = ddgiFixedRays();
+	bool geometryRay = _ray < geometryRays;
+	uint index = geometryRay ? _ray : _ray - geometryRays;
+	float count = geometryRay ? float(geometryRays) : u_ddgiGrid[1].w - float(geometryRays);
+	float z = 1.0 - 2.0 * (float(index) + 0.5) / count;
 	float radius = sqrt(max(0.0, 1.0 - z * z));
-	float phi = float(_ray) * 2.39996322973;
-	return mul(u_ddgiRotation, vec4(cos(phi) * radius, sin(phi) * radius, z, 0.0)).xyz;
+	float phi = float(index) * 2.39996322973;
+	vec3 direction = vec3(cos(phi) * radius, sin(phi) * radius, z);
+	return normalize(geometryRay ? direction : mul(u_ddgiRotation, vec4(direction, 0.0)).xyz);
 }
 
 ivec2 ddgiRayPixel(uint _probe, uint _ray)
@@ -71,7 +88,7 @@ vec3 sampleDiffuseGi(vec3 _position, vec3 _normal, vec3 _geometric, vec3 _view)
 	vec3 base = min(floor(grid), u_ddgiGrid[2].xyz - 2.0);
 	vec3 fraction = grid - base;
 	vec3 sum = vec3_splat(0.0);
-	float weight = 0.0, support = 0.0;
+	float weight = 0.0;
 	for (int zz = 0; zz < 2; ++zz)
 	{
 		for (int yy = 0; yy < 2; ++yy)
@@ -81,32 +98,33 @@ vec3 sampleDiffuseGi(vec3 _position, vec3 _normal, vec3 _geometric, vec3 _view)
 				vec3 offset = vec3(float(xx), float(yy), float(zz));
 				vec3 cell = base + offset;
 				ivec2 tile = ddgiTile(uvec3(cell));
+				vec4 probe = texture2DLod(s_ddgiIrradiance, ddgiUv(tile, _normal, 6.0), 0.0);
+				if (probe.a < 0.5) { continue; }
 				vec3 center = u_ddgiGrid[0].xyz + cell * u_ddgiGrid[1].xyz;
 				vec3 delta = biased - center;
 				float distance = max(length(delta), 0.00001);
 				vec3 toward = center - _position;
 				toward *= inversesqrt(max(dot(toward, toward), 0.00000001));
 				float facing = dot(toward, _normal) * 0.5 + 0.5;
-				vec3 spatial = mix(1.0 - fraction, fraction, offset);
-				float adjacency = spatial.x * spatial.y * spatial.z + 0.001;
-				float w = (facing * facing + 0.2) * adjacency;
-				float available = w < 0.2 ? w * w * w / 0.04 : w;
-				support += available;
-				vec2 moments = texture2DLod(s_ddgiDistance, ddgiUv(tile, delta / distance, 16.0), 0.0).rg;
-				float variance = max(moments.y - moments.x * moments.x, 0.00000001);
+				vec3 spatial = max(mix(1.0 - fraction, fraction, offset), vec3_splat(0.001));
+				float w = facing * facing + 0.2;
+				vec2 moments = texture2DLod(s_ddgiDistance, ddgiUv(tile, dot(delta, delta) > 0.0000000001 ? delta / distance : _normal, 16.0), 0.0).rg;
+				float variance = max(abs(moments.y - moments.x * moments.x), 0.00000001);
 				float difference = max(0.0, distance / u_ddgiGrid[0].w - moments.x);
 				float visibility = variance / (variance + difference * difference);
-				w *= visibility * visibility * visibility;
-				// Crush weak visibility before normalization, retaining its confidence below.
+				// DDGI retains a weak fallback and applies spatial interpolation after visibility weighting.
+				w = max(w * max(0.05, visibility * visibility * visibility), 0.000001);
 				if (w < 0.2) { w *= w * w / 0.04; }
-				sum += texture2DLod(s_ddgiIrradiance, ddgiUv(tile, _normal, 6.0), 0.0).rgb * w;
+				w *= spatial.x * spatial.y * spatial.z;
+				vec3 encoded = probe.rgb;
+				sum += pow(max(encoded, vec3_splat(0.0)), vec3_splat(FROST_DDGI_IRRADIANCE_GAMMA * 0.5)) * w;
 				weight += w;
 			}
 		}
 	}
-	vec3 irradiance = sum / max(weight, 0.00000001);
-	float confidence = weight / max(support, 0.00000001);
-	return irradiance * irradiance * smoothstep(0.01, 0.1, confidence);
+	if (weight <= 0.0) { return vec3_splat(0.0); }
+	vec3 irradiance = sum / weight;
+	return irradiance * irradiance;
 }
 #endif
 #endif // FROST_DDGI_SH_HEADER_GUARD

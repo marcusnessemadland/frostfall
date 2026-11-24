@@ -28,7 +28,7 @@ void main()
 	bool probeRay = float(pixel.y) >= u_ddgiTrace.z;
 	vec3 position = rayHitPosition(hit);
 	vec3 primary = position - ray.xyz * hit.distance;
-	float radius = probeRay ? hit.distance * 2.0 / sqrt(u_ddgiGrid[1].w)
+	float radius = probeRay ? hit.distance * 2.0 / sqrt(u_ddgiGrid[1].w - float(ddgiFixedRays()))
 		: (mix(length(primary - u_sceneCamera.xyz), 1.0, u_sceneCamera.w) + hit.distance) / max(1.0, u_rayScene.w);
 	radius += probeRay ? 0.0 : hit.distance * ray.w * ray.w * 0.5;
 	vec3 color = shadeRayHit(position, ray.xyz, hit, uint(u_reflectionTrace.w), ray.w, radius, probeRay);

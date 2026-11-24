@@ -6,7 +6,12 @@
 #ifndef FROST_SHADOW_SAMPLER
 #define FROST_SHADOW_SAMPLER 5
 #endif
+// Primary shadows use bilinear PCF; ray hits retain explicit-LOD depth comparisons.
+#if BGFX_SHADER_TYPE_FRAGMENT
+SAMPLER2DARRAYSHADOW(s_shadowAtlas, FROST_SHADOW_SAMPLER);
+#else
 SAMPLER2DARRAY(s_shadowAtlas, FROST_SHADOW_SAMPLER);
+#endif
 uniform mat4 u_shadowMatrix[8];
 uniform vec4 u_shadowSplits[2];
 uniform vec4 u_shadowTexels[2]; // World units per texel, one per cascade.
@@ -16,13 +21,17 @@ uniform vec4 u_shadowDirection[2];
 uniform mat4 u_shadowView[2];
 uniform vec4 u_shadowSelection;
 
-float shadowDepth(vec2 _uv, int _cascade, int _light)
+float shadowCompare(vec2 _uv, float _depth, int _cascade, int _light)
 {
 	// Clamp every PCF tap inside its tile to prevent leaking between cascades.
 	vec2 uv = clamp(_uv, vec2_splat(u_shadowInfo[_light].x * 0.5),
 		vec2_splat(1.0 - u_shadowInfo[_light].x * 0.5));
 	uv.x = (uv.x + float(_cascade)) * 0.25;
-	return texture2DArrayLod(s_shadowAtlas, vec3(uv, float(_light)), 0.0).r;
+#if BGFX_SHADER_TYPE_FRAGMENT
+	return shadow2DArray(s_shadowAtlas, vec4(uv, float(_light), _depth));
+#else
+	return step(_depth, texture2DArrayLod(s_shadowAtlas, vec3(uv, float(_light)), 0.0).r);
+#endif
 }
 
 int shadowCascade(float _depth, int _light)
@@ -59,7 +68,7 @@ float sampleCascade(vec3 _position, vec3 _normal, int _cascade, int _light)
 		for (int xx = -1; xx <= 1; ++xx)
 		{
 			vec2 offset = vec2(float(xx), float(yy)) * u_shadowInfo[_light].x * u_shadowParameters.w;
-			result += step(projected.z - u_shadowParameters.x, shadowDepth(uv + offset, _cascade, _light));
+			result += shadowCompare(uv + offset, projected.z - u_shadowParameters.x, _cascade, _light);
 		}
 	}
 	return result / 9.0;

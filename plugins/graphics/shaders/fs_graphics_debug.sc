@@ -7,6 +7,7 @@ $input v_texcoord0
 #include "reflection.sh"
 #include "tonemap.sh"
 #include "environment.sh"
+#include "ddgi.sh"
 
 SAMPLER2D(s_normal, 0);
 SAMPLER2D(s_albedo, 1);
@@ -86,7 +87,7 @@ void main()
 		else
 		{
 			vec4 value = texture2DLod(s_graphicsDebug, uv * u_debugSource.zw, u_graphicsDebug.z);
-			if (mode == 13) { color = debugHdr(value.rgb * value.rgb); }
+			if (mode == 13) { color = debugHdr(ddgiDecodeIrradiance(value.rgb)); }
 			else if (mode == 14) { color = toLinearAccurate(vec3_splat(saturate(value.r * u_debugProbe.x / u_graphicsDebug.y))); }
 			else if (mode == 15)
 			{

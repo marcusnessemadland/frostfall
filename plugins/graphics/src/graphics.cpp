@@ -1254,7 +1254,8 @@ namespace frost
 	static void bindShadows(const DirectionalShadowResource& _shadows, const DirectionalShadowSettings& _settings,
 		const RenderFrame& _frame, int32_t _selection)
 	{
-		bgfx::setTexture(5, _shadows.sampler, _shadows.atlas);
+		// Bilinear depth comparisons keep PCF taps continuous at shadow texel boundaries.
+		bgfx::setTexture(5, _shadows.sampler, _shadows.atlas, BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP | BGFX_SAMPLER_COMPARE_LEQUAL);
 		bindShadowUniforms(_shadows, _settings, _frame, _selection);
 	}
 
@@ -3069,8 +3070,8 @@ namespace frost
 				_gi.grid[2][ii] = float(dimensions[ii]);
 			}
 			_gi.count = dimensions[0] * dimensions[1] * dimensions[2];
-			_gi.grid[0][3] = length(Vec3{ _gi.grid[1][0] * float(dimensions[0] - 1),
-				_gi.grid[1][1] * float(dimensions[1] - 1), _gi.grid[1][2] * float(dimensions[2] - 1) });
+			// Visibility moments describe the local probe neighborhood, including ray misses.
+			_gi.grid[0][3] = 1.5f * length(Vec3{ _gi.grid[1][0], _gi.grid[1][1], _gi.grid[1][2] });
 			_gi.grid[1][3] = float(clamp(uint32_t(_settings.giRaysPerProbe), 32u, 256u));
 			const uint32_t columns = dimensions[0] * dimensions[1], rows = dimensions[2];
 			FROST_ASSERT(columns * 16 <= bgfx::getCaps()->limits.maxTextureSize, "DDGI atlas exceeds the texture size limit.");
@@ -3087,7 +3088,7 @@ namespace frost
 					values[jj * 4 + 2] = values[jj * 4 + 3] = 0.0f;
 				}
 				_gi.irradiance[ii] = bgfx::createTexture2D(uint16_t(columns * 6), uint16_t(rows * 6), false, 1, bgfx::TextureFormat::RGBA16F, flags, color);
-				// Float moments retain small variances at walls; distance is normalized to the volume diagonal.
+				// Float moments retain small variances at walls; distance is normalized to the local visibility range.
 				_gi.distance[ii] = bgfx::createTexture2D(uint16_t(columns * 16), uint16_t(rows * 16), false, 1, bgfx::TextureFormat::RGBA32F, flags, moments);
 				FROST_ASSERT(bgfx::isValid(_gi.irradiance[ii]) && bgfx::isValid(_gi.distance[ii]), "Unable to create DDGI probe atlases.");
 				bgfx::setName(_gi.irradiance[ii], "DDGI - octahedral irradiance");
@@ -3793,7 +3794,9 @@ namespace frost
 				return;
 			}
 			RngMwc random(12345u + _gi->frame * 747796405u, 65435u + _gi->frame * 2891336453u);
-			mtxRotateXYZ(_gi->rotation, frnd(&random) * 2.0f * kPi, frnd(&random) * 2.0f * kPi, frnd(&random) * 2.0f * kPi);
+			// Uniform quaternion sampling avoids the directional bias of random Euler angles.
+			const float u = frnd(&random), a = frnd(&random) * 2.0f * kPi, b = frnd(&random) * 2.0f * kPi;
+			mtxFromQuaternion(_gi->rotation, Quaternion{ sqrt(1.0f - u) * sin(a), sqrt(1.0f - u) * cos(a), sqrt(u) * sin(b), sqrt(u) * cos(b) });
 			++_gi->frame;
 			const uint32_t rayHeight = _reflection->probeRow
 				+ (_gi->count * uint32_t(_gi->grid[1][3]) + _reflection->rayWidth - 1) / _reflection->rayWidth;

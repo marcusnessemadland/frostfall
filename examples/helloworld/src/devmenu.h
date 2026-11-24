@@ -12,8 +12,18 @@
 // Engine Plugins
 #include <devmenu.h>
 
+// Example
+#include "scene.h"
+
 namespace
 {
+	/// Load scene button data.
+	///
+	struct LoadSceneItem
+	{
+		int32_t scene;
+	};
+
 	/// Reset camera button data.
 	///
 	struct ResetCameraItem
@@ -29,6 +39,14 @@ namespace
 				frost::ResT<frost::ActiveCameraResource> _activeCamera)
 		{
 			_menu->custom = _world.spawn().id();
+
+			// Scene menu
+			const frost::Entity sceneFolder = _world.spawn(frost::DevmenuItemComponent{ "Scene", 2 },
+				frost::DevmenuFolderComponent{}).setParent(_menu->custom).id();
+			_world.spawn(frost::DevmenuItemComponent{ "Load \"courtyard.bin\"", 0 },
+				frost::DevmenuButtonComponent{}, LoadSceneItem{ 0 }).setParent(sceneFolder);
+			_world.spawn(frost::DevmenuItemComponent{ "Load \"desert.bin\"", 1 },
+				frost::DevmenuButtonComponent{}, LoadSceneItem{ 1 }).setParent(sceneFolder);
 
 			// Camera menu
 			const frost::Entity folder = _world.spawn(frost::DevmenuItemComponent{ "Camera", 3 },
@@ -59,8 +77,19 @@ namespace
 		}
 
 		static void update(frost::World& _world,
-				frost::QueryT<const frost::DevmenuButtonComponent&, const ResetCameraItem&> _buttons)
+				frost::QueryT<const frost::DevmenuButtonComponent&, const ResetCameraItem&> _buttons,
+				frost::QueryT<const frost::DevmenuButtonComponent&, const LoadSceneItem&> _sceneButtons,
+				frost::ResMutT<SceneSelectionResource> _selection)
 		{
+			_sceneButtons.each([&](const frost::DevmenuButtonComponent& _button, const LoadSceneItem& _item)
+			{
+				if (_button.activated)
+				{
+					_selection->selected = _item.scene;
+					_selection->loaded = -1; // Reload even when this scene is already active.
+				}
+			});
+
 			// On camera reset button press
 			_buttons.each([&](const frost::DevmenuButtonComponent& _button, const ResetCameraItem& _item)
 			{

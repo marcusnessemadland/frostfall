@@ -24,7 +24,8 @@ namespace
 			startup = _app.addSystems(frost::EcsStage::PostStartup, CameraSystem::startup).after(startup).id();
 			_app.addSystems(frost::EcsStage::PostStartup, DevmenuSystem::startup).after(startup);
 			_app.addSystems(frost::EcsStage::Update, CameraSystem::update);
-			_app.addSystems(frost::EcsStage::Update, DevmenuSystem::update);
+			const frost::SystemId menu = _app.addSystems(frost::EcsStage::Update, DevmenuSystem::update).id();
+			_app.addSystems(frost::EcsStage::Update, SceneSystem::update).after(menu);
 		}
 	};
 

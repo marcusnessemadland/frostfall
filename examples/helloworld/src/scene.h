@@ -55,34 +55,24 @@ namespace
 		{ -1.51551f, 0.16456f, -2.04105f }, // SM_FloorLantern_Glass_A
 	};
 
+	/// Scene selection and ownership, shared with the example devmenu.
+	///
+	struct SceneSelectionResource
+	{
+		int32_t selected = 0;
+		int32_t loaded = -1;
+		frost::Entity root;
+		frost::Entity player;
+	};
+
 	/// Loading a scene.
 	///
 	struct SceneSystem
 	{
 		static void startup(frost::World& _world)
 		{
-			AssetLoader assets(_world.getAllocator());
-
-			// Load and spawn scene
-			const frost::SceneHandle scene = assets.loadScene("courtyard.bin");
-			const frost::Entity sceneRoot = frost::spawnScene(_world, scene, frost::ErrorAssert{});
-			frost::release(scene);
-
 			// Spawn player
-			frost::Entity player = _world.spawn().id();
-			{
-				const frost::Entity playerStart = frost::findSceneEntity(_world, sceneRoot, "Player_Start");
-				const frost::TransformComponent* playerStartTransform = _world.get<frost::TransformComponent>(playerStart);
-
-				// Add transform
-				if (NULL != playerStartTransform)
-				{
-					frost::TransformComponent transform;
-					transform.position = playerStartTransform->position;
-					transform.rotation = playerStartTransform->rotation;
-					_world.insert(player, transform);
-				}
-			}
+			const frost::Entity player = _world.spawn(frost::TransformComponent{}).id();
 			{
 				// Add camera
 				CameraControllerComponent* controller = _world.emplace<CameraControllerComponent>(player);
@@ -93,6 +83,10 @@ namespace
 				// Set active graphics camera
 				_world.getResourceMut<frost::ActiveCameraResource>()->entity = player;
 			}
+
+			SceneSelectionResource& selection = _world.insertResource<SceneSelectionResource>();
+			selection.player = player;
+			load(_world, selection);
 
 			// Spawn sky
 			const frost::Entity sky = _world.spawn(frost::SkyAtmosphereComponent{}, frost::SkyLightComponent{}).id();
@@ -118,6 +112,52 @@ namespace
 			frost::DirectionalShadowSettings* shadows = &_world.getResourceMut<frost::GraphicsSettings>()->directionalShadow;
 			shadows->resolution = 2048;
 			shadows->distanceScale = 1.0f / 3.0f;
+		}
+
+		static void update(frost::World& _world, frost::ResMutT<SceneSelectionResource> _selection)
+		{
+			if (_selection->selected != _selection->loaded)
+			{
+				load(_world, *_selection);
+			}
+		}
+
+		static void load(frost::World& _world, SceneSelectionResource& _selection)
+		{
+			static const char* const directories[] = { "courtyard", "desert" };
+			static const char* const paths[] = { "courtyard/courtyard.bin", "desert/desert.bin" };
+			_selection.selected = frost::clamp(_selection.selected, 0, int32_t(FROST_COUNTOF(paths)) - 1);
+
+			if (_world.contains(_selection.root))
+			{
+				frost::despawnScene(_world, _selection.root);
+			}
+
+			// Index only this scene's dependencies, including when packaged beside the executable.
+			AssetLoader assets(_world.getAllocator(), frost::FilePath(directories[_selection.selected]));
+			const frost::SceneHandle scene = assets.loadScene(paths[_selection.selected]);
+			_selection.root = frost::spawnScene(_world, scene, frost::ErrorAssert{});
+			frost::release(scene);
+			_selection.loaded = _selection.selected;
+
+
+			const frost::Entity playerStart = frost::findSceneEntity(_world, _selection.root, "Player_Start");
+			const frost::TransformComponent* playerStartTransform = _world.get<frost::TransformComponent>(playerStart);
+			frost::TransformComponent transform;
+			if (NULL != playerStartTransform)
+			{
+				transform.position = playerStartTransform->position;
+				transform.rotation = playerStartTransform->rotation;
+			}
+			_world.insert(_selection.player, transform);
+
+			CameraControllerComponent* controller = _world.getMut<CameraControllerComponent>(_selection.player);
+			controller->startPosition = transform.position;
+			controller->startRotation = transform.rotation;
+			if (frost::CameraComponent* camera = _world.getMut<frost::CameraComponent>(_selection.player))
+			{
+				CameraSystem::reset(*camera, *controller, &transform);
+			}
 		}
 
 	};

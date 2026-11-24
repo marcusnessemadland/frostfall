@@ -194,7 +194,14 @@ struct Converter
 	fs::path input, output, runtime, tools;
 	unsigned workers = 4, maxTextureSize = 0;
 	bool compile = true, shareMaterialBakes = false;
-	std::string exclude;
+	std::vector<std::string> excludes;
+	std::map<std::string, fs::path> materialOverrides;
+	std::map<std::string, fs::path> textureOverrides;
+	std::set<std::string> usedOverrides;
+	std::set<std::string> usedTextureOverrides;
+	std::set<fs::path> overrideJobs;
+	std::set<fs::path> textureOverrideJobs;
+	unsigned relocatedImages = 0;
 	std::vector<cgltf_node*> nodes;
 	std::vector<std::string> nodeNames;
 	std::map<const cgltf_node*, size_t> nodeIndices;
@@ -231,7 +238,7 @@ struct Converter
 	}
 	void visit(cgltf_node* node)
 	{
-		if (!exclude.empty() && node->name && exclude == node->name) { return; }
+		if (node->name && std::find(excludes.begin(), excludes.end(), node->name) != excludes.end()) { return; }
 		nodeIndices[node] = nodes.size(); nodes.push_back(node);
 		for (size_t ii = 0; ii < node->children_count; ++ii) { visit(node->children[ii]); }
 	}
@@ -240,6 +247,29 @@ struct Converter
 		const cgltf_image* image = texture->image;
 		const auto key = std::make_pair(image, usage);
 		if (textures.count(key)) { return textures[key]; }
+		const auto override = image->uri ? textureOverrides.find(image->uri) : textureOverrides.end();
+		if (override != textureOverrides.end())
+		{
+			frost::DefaultAllocator allocator; frost::Settings settings(&allocator);
+			frost::FileReader reader; frost::Error error; frost::Guid guid;
+			if (!frost::open(&reader, pathText(override->second).c_str(), &error)) { return {}; }
+			settings.read(&reader, &error); frost::close(&reader);
+			if (!error.isOk() || !frost::fromString(&guid, settings.get("guid")) || !frost::isValid(guid))
+			{
+				std::fprintf(stderr, "Texture override %s requires a persistent GUID.\n", pathText(override->second).c_str()); return {};
+			}
+			char identity[37]; frost::toString(identity, sizeof(identity), guid);
+			const std::string stem = pathText(override->second.stem());
+			textures[key] = identity; textureGuids[stem] = identity;
+			usedTextureOverrides.insert(override->first);
+			if (textureOverrideJobs.insert(override->second).second)
+			{
+				Job compileTexture{ compiler("texturec"), { "--config", pathText(override->second), "-o", pathText(runtime / (stem + ".bin")) } };
+				if (maxTextureSize) { compileTexture.arguments.insert(compileTexture.arguments.end(), { "--max", std::to_string(maxTextureSize) }); }
+				textureJobs.push_back(compileTexture);
+			}
+			return identity;
+		}
 		const size_t index = cgltf_image_index(data, image);
 		const std::string name = "tex_" + std::to_string(index) + (usage == 0 ? "_color" : usage == 1 ? "_normal" : "_linear");
 		const std::string guid = guidFor(assetPath(name));
@@ -247,12 +277,16 @@ struct Converter
 		if (image->uri && std::strncmp(image->uri, "data:", 5) != 0)
 		{
 			std::string uri = image->uri; uri.resize(cgltf_decode_uri(uri.data())); imagePath = input.parent_path() / fs::u8path(uri);
+			if (!fs::exists(imagePath) && fs::exists(input.parent_path() / imagePath.filename()))
+			{
+				imagePath = input.parent_path() / imagePath.filename(); ++relocatedImages;
+			}
 		}
 		else
 		{
 			const bool jpeg = (image->mime_type && std::strstr(image->mime_type, "jpeg"))
 				|| (image->uri && std::strncmp(image->uri, "data:image/jpeg", 15) == 0);
-			imagePath = output / "source" / ("image_" + std::to_string(index) + (jpeg ? ".jpg" : ".png"));
+			imagePath = output / ("image_" + std::to_string(index) + (jpeg ? ".jpg" : ".png"));
 			if (image->buffer_view)
 			{
 				if (!save(imagePath, cgltf_buffer_view_data(image->buffer_view), image->buffer_view->size)) { return {}; }
@@ -299,6 +333,56 @@ struct Converter
 	bool material(const cgltf_material* source, const cgltf_mesh& mesh, const std::string& geometry)
 	{
 		if (materials.count(source)) { return true; }
+		auto override = source && source->name ? materialOverrides.find(source->name) : materialOverrides.end();
+		if (override == materialOverrides.end() && source && source->name)
+		{
+			for (auto candidate = materialOverrides.begin(); candidate != materialOverrides.end(); ++candidate)
+			{
+				const std::string& pattern = candidate->first;
+				if (pattern.ends_with('*') && std::string(source->name).starts_with(pattern.substr(0, pattern.size() - 1)))
+				{
+					override = candidate; break;
+				}
+			}
+		}
+		if (override != materialOverrides.end())
+		{
+			frost::DefaultAllocator allocator; frost::Settings settings(&allocator);
+			frost::FileReader reader; frost::Error error; frost::Guid guid;
+			if (!frost::open(&reader, pathText(override->second).c_str(), &error)) { return false; }
+			settings.read(&reader, &error); frost::close(&reader);
+			if (!error.isOk() || !frost::fromString(&guid, settings.get("guid")) || !frost::isValid(guid))
+			{
+				std::fprintf(stderr, "Material override %s requires a persistent GUID.\n", pathText(override->second).c_str()); return false;
+			}
+			usedOverrides.insert(override->first);
+			bool fallbackOnly = false;
+			const auto fallback = settings.get("fallbackOnly");
+			if (!fallback.isEmpty() && !frost::fromString(&fallbackOnly, fallback)) { return false; }
+			if (!fallbackOnly || !source->pbr_metallic_roughness.base_color_texture.texture)
+			{
+				Mapping selected;
+				const auto scale = settings.get("uvScale");
+				if (!scale.isEmpty())
+				{
+					std::istringstream values(std::string(scale.getPtr(), scale.getLength()));
+					if (!(values >> selected.scale[0] >> selected.scale[1]) || !(values >> std::ws).eof()
+						|| !std::isfinite(selected.scale[0]) || !std::isfinite(selected.scale[1]))
+					{
+						std::fprintf(stderr, "Material override uvScale requires two finite values.\n"); return false;
+					}
+				}
+				char identity[37]; frost::toString(identity, sizeof(identity), guid);
+				materials[source] = identity; mappings[source] = selected;
+				usedOverrides.insert(override->first);
+				if (overrideJobs.insert(override->second).second)
+				{
+					materialJobs.push_back({ compiler("materialc"), { "-f", pathText(override->second), "-o",
+						pathText(runtime / (pathText(override->second.stem()) + ".bin")) } });
+				}
+				return true;
+			}
+		}
 		const size_t index = source ? cgltf_material_index(data, source) : data->materials_count;
 		const std::string name = "mat_" + std::to_string(index);
 		const std::string guid = guidFor(assetPath(name));
@@ -441,7 +525,7 @@ struct Converter
 			}
 			a << '}'; accessors.push_back(a.str()); return accessor;
 		};
-		std::ostringstream asset; asset << "guid = " << guid << "\nsource = source/" << name << ".gltf\ncoordinateSystem = lh-up+y\nscale = 1\nflipV = false\npackNormal = 1\ntangent = true\ncompress = true\nlod = true\n[materials]\n";
+		std::ostringstream asset; asset << "guid = " << guid << "\nsource = " << name << ".gltf\ncoordinateSystem = lh-up+y\nscale = 1\nflipV = false\npackNormal = 1\ntangent = true\ncompress = true\nlod = true\n[materials]\n";
 		for (size_t ii = 0; ii < source->primitives_count; ++ii)
 		{
 			const auto& primitive = source->primitives[ii];
@@ -507,7 +591,7 @@ struct Converter
 		meshes[source] = guid;
 		sharedMeshes[key] = guid;
 		meshDefaults[guid] = slots;
-		if (!save(output / "source" / (name + ".gltf"), gltf.str()) || !save(output / "source" / (name + ".bin"), bytes.data(), bytes.size())
+		if (!save(output / (name + ".gltf"), gltf.str()) || !save(output / (name + ".bin"), bytes.data(), bytes.size())
 			|| !save(assetPath(name), asset.str())) { return false; }
 		Job compileMesh = job("meshc", name); compileMesh.arguments.insert(compileMesh.arguments.end(), { "--obb", "1" });
 		meshJobs.push_back(compileMesh); return true;
@@ -545,7 +629,7 @@ struct Converter
 			|| cgltf_validate(data) != cgltf_result_success) { return false; }
 		cgltf_scene* scene = data->scene ? data->scene : data->scenes_count ? &data->scenes[0] : NULL;
 		if (!scene) { return false; }
-		fs::create_directories(output / "source"); fs::create_directories(runtime);
+		fs::create_directories(output); fs::create_directories(runtime);
 		for (size_t ii = 0; ii < scene->nodes_count; ++ii) { visit(scene->nodes[ii]); }
 		std::set<std::string> names;
 		for (size_t ii = 0; ii < nodes.size(); ++ii)
@@ -585,6 +669,14 @@ struct Converter
 			}
 		}
 		if (!save(assetPath(name), text.str())) { return false; }
+		for (const auto& override : materialOverrides)
+		{
+			if (!usedOverrides.count(override.first)) { std::fprintf(stderr, "Material override not found in export: %s.\n", override.first.c_str()); return false; }
+		}
+		for (const auto& override : textureOverrides)
+		{
+			if (!usedTextureOverrides.count(override.first)) { std::fprintf(stderr, "Texture override not found in export: %s.\n", override.first.c_str()); return false; }
+		}
 		textureJobs.erase(std::remove_if(textureJobs.begin(), textureJobs.end(), [&](const Job& job)
 		{
 			return !usedTextures.count(textureGuids[fs::u8path(job.arguments[1]).stem().string()]);
@@ -592,11 +684,13 @@ struct Converter
 		for (const Job& job : textureJobs)
 		{
 			const std::string stem = fs::u8path(job.arguments[1]).stem().string();
-			if (!save(assetPath(stem), textureDescriptions[stem])) { return false; }
+			const auto description = textureDescriptions.find(stem);
+			if (description != textureDescriptions.end() && !save(assetPath(stem), description->second)) { return false; }
 		}
 		std::printf("unrealc: %zu entities, %zu shared meshes, %zu materials, %zu textures (%zu mesh records).\n",
 			nodes.size(), meshJobs.size(), materialJobs.size(), textureJobs.size(), meshes.size());
 		if (sharedBakeCount) { std::printf("Shared material bakes: %u repeated geometry/material pairs use their first bake.\n", sharedBakeCount); }
+		if (relocatedImages) { std::printf("Resolved %u moved images by filename beside the glTF.\n", relocatedImages); }
 		if (blended || approximated) { std::printf("Material approximations: %u BLEND -> MASK; %u use core PBR instead of specular/IOR/layer extensions.\n", blended, approximated); }
 		if (!compile) { return true; }
 		return runJobs(textureJobs, workers) && runJobs(materialJobs, workers) && runJobs(meshJobs, workers) && run(job("scenec", name));
@@ -612,7 +706,9 @@ int main(int argc, const char* argv[])
 		{ 0, "tools", 1, "<directory>", "Compiler directory (default: beside unrealc)." },
 		{ 'j', "jobs", 1, "<count>", "Parallel compiler processes (default: 4)." },
 		{ 0, "max-texture-size", 1, "<pixels>", "Optional texture size limit." },
-		{ 0, "exclude", 1, "<node>", "Exclude a named node and its subtree." },
+		{ 0, "exclude", 1, "<node>", "Exclude a named node and its subtree (repeatable)." },
+		{ 0, "material-override", 1, "<name>=<asset>", "Use an authored Frostfall material (repeatable)." },
+		{ 0, "texture-override", 1, "<uri>=<asset>", "Use an authored Frostfall texture (repeatable)." },
 		{ 0, "no-compile", 0, NULL, "Generate editable source assets only." },
 		{ 0, "share-material-bakes", 0, NULL, "Use one Unreal material bake per repeated geometry and material family." },
 		{ 'h', "help", 0, NULL, "Display help." },
@@ -621,15 +717,34 @@ int main(int argc, const char* argv[])
 	const char* input = command.findOption('f'), *output = command.findOption('o');
 	if (!input || !output || command.hasArg('h', "help") || command.findUnknownOption())
 	{
-		std::puts("Usage: unrealc -f level.gltf -o generated [--runtime runtime] [--tools directory] [-j 4] [--exclude node] [--max-texture-size pixels] [--share-material-bakes] [--no-compile]"); return 1;
+		std::puts("Usage: unrealc -f level.gltf -o generated [--runtime runtime] [--tools directory] [-j 4] [--exclude node] [--material-override name=asset] [--texture-override uri=asset] [--max-texture-size pixels] [--share-material-bakes] [--no-compile]"); return 1;
 	}
 	Converter converter; converter.input = fs::absolute(fs::u8path(input)); converter.output = fs::absolute(fs::u8path(output));
-	const char* runtime = command.findOption("runtime"), *tools = command.findOption("tools"), *jobs = command.findOption('j', "jobs"), *max = command.findOption("max-texture-size"), *exclude = command.findOption("exclude");
+	const auto relative = converter.output.lexically_normal().lexically_relative(converter.input.parent_path().lexically_normal());
+	if (!relative.empty() && *relative.begin() != "..") { std::fprintf(stderr, "Output must be outside the Unreal export directory.\n"); return 1; }
+	const char* runtime = command.findOption("runtime"), *tools = command.findOption("tools"), *jobs = command.findOption('j', "jobs"), *max = command.findOption("max-texture-size");
 	converter.runtime = runtime ? fs::absolute(fs::u8path(runtime)) : converter.output / "runtime";
+	const auto runtimeRelative = converter.runtime.lexically_normal().lexically_relative(converter.input.parent_path().lexically_normal());
+	if (!runtimeRelative.empty() && *runtimeRelative.begin() != "..") { std::fprintf(stderr, "Runtime output must be outside the Unreal export directory.\n"); return 1; }
 	converter.tools = tools ? fs::absolute(fs::u8path(tools)) : fs::u8path(pathText(fs::path(frost::FilePath(frost::Dir::Executable).getCPtr()).parent_path()));
 	if (jobs && (!frost::fromString(&converter.workers, jobs) || converter.workers == 0)) { return 1; }
 	if (max && !frost::fromString(&converter.maxTextureSize, max)) { return 1; }
-	if (exclude) { converter.exclude = exclude; } converter.compile = !command.hasArg("no-compile");
+	for (int32_t ii = 0; const char* exclude = command.findOption(ii, 0, "exclude"); ++ii) { converter.excludes.emplace_back(exclude); }
+	const char* overrideOptions[] = { "material-override", "texture-override" };
+	for (uint32_t type = 0; type < 2; ++type)
+	{
+		for (int32_t ii = 0; const char* value = command.findOption(ii, 0, overrideOptions[type]); ++ii)
+		{
+			const std::string entry = value; const size_t separator = entry.find('=');
+			if (separator == std::string::npos || separator == 0 || separator + 1 == entry.size())
+			{
+				std::fprintf(stderr, "Asset override requires <name>=<asset>.\n"); return 1;
+			}
+			auto& overrides = type == 0 ? converter.materialOverrides : converter.textureOverrides;
+			overrides[entry.substr(0, separator)] = fs::absolute(fs::u8path(entry.substr(separator + 1)));
+		}
+	}
+	converter.compile = !command.hasArg("no-compile");
 	converter.shareMaterialBakes = command.hasArg("share-material-bakes");
 	const bool success = converter.convert();
 	if (!success) { std::fprintf(stderr, "Unable to convert %s.\n", input); }

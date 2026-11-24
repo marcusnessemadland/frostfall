@@ -473,7 +473,7 @@ namespace frost
 		bool diffuseGi = true; //!< Primary diffuse term; probes still light glossy hits.
 		bool glossyGi = true;
 		uint16_t giRaysPerProbe = 192; //!< 32..256 rays; storage is reserved at startup/viewport resize.
-		float giHysteresis = 0.97f; //!< Retained probe history; zero replaces it each frame.
+		float giHysteresis = 0.995f; //!< Retained probe history; zero replaces it each frame.
 		float giNormalBias = 0.05f; //!< World units, relative to geometric normals.
 		float giViewBias = 0.02f;
 		float giDistanceSharpness = 50.0f; //!< Power-cosine visibility filter, 1..64.
